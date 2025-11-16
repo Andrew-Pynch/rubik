@@ -1,97 +1,13 @@
-from enum import Enum
-from typing import List
+from faces import Face, SOLVED_FACES, FACE_OFFSETS
+from world import World
 
-class Face(Enum):
-    FRONT = 0
-    RIGHT = 1
-    BACK = 2
-    LEFT = 3
-    TOP = 4
-    BOTTOM = 5
-
-    def __str__(self):
-        return self.name
-
-class Color(Enum):
-    WHITE = 1
-    YELLOW = 2
-    RED = 3
-    ORANGE = 4
-    GREEN = 5
-    BLUE = 6
-
-    def __str__(self):
-        # show a colored block for each sticker
-        code = ANSI_COLOR_CODES[self]
-        symbol = SYMBOLS[self]
-        reset = ANSI_RESET
-        return f"{code}{symbol}{reset}"
-
-
-ANSI_RESET = "\033[0m"
-
-ANSI_COLOR_CODES = {
-    Color.WHITE:  "\033[97m",  # bright white
-    Color.YELLOW: "\033[93m",  # bright yellow
-    Color.RED:    "\033[91m",  # bright red
-    Color.ORANGE: "\033[33m",  # normal yellow-ish
-    Color.GREEN:  "\033[92m",  # bright green
-    Color.BLUE:   "\033[94m",  # bright blue
-}
-
-SYMBOLS = {
-    Color.WHITE:  "■",
-    Color.YELLOW: "■",
-    Color.RED:    "■",
-    Color.ORANGE: "■",
-    Color.GREEN:  "■",
-    Color.BLUE:   "■",
-}
-
-SOLVED_FACES = {
-    Face.FRONT: [
-        [Color.GREEN, Color.GREEN, Color.GREEN],
-        [Color.GREEN, Color.GREEN, Color.GREEN],
-        [Color.GREEN, Color.GREEN, Color.GREEN],
-    ],
-    Face.BACK: [
-        [Color.BLUE, Color.BLUE, Color.BLUE],
-        [Color.BLUE, Color.BLUE, Color.BLUE],
-        [Color.BLUE, Color.BLUE, Color.BLUE],
-    ],
-    Face.LEFT: [
-        [Color.ORANGE, Color.ORANGE, Color.ORANGE],
-        [Color.ORANGE, Color.ORANGE, Color.ORANGE],
-        [Color.ORANGE, Color.ORANGE, Color.ORANGE],
-    ],
-    Face.RIGHT: [
-        [Color.RED, Color.RED, Color.RED],
-        [Color.RED, Color.RED, Color.RED],
-        [Color.RED, Color.RED, Color.RED],
-    ],
-    Face.TOP: [
-        [Color.WHITE, Color.WHITE, Color.WHITE],
-        [Color.WHITE, Color.WHITE, Color.WHITE],
-        [Color.WHITE, Color.WHITE, Color.WHITE],
-    ],
-    Face.BOTTOM: [
-        [Color.YELLOW, Color.YELLOW, Color.YELLOW],
-        [Color.YELLOW, Color.YELLOW, Color.YELLOW],
-        [Color.YELLOW, Color.YELLOW, Color.YELLOW],
-    ],
-}
-
-WORLD_WIDTH = 30
-WORLD_HEIGHT = 30
-
-class World:
-    def __init__(self):
-        self.width = WORLD_WIDTH
-        self.height = WORLD_HEIGHT
-        self.grid = [" " for _ in range(WORLD_WIDTH * WORLD_HEIGHT)]
+world = World()
 
 class CubeState:
     def __init__(self):
+        self.origin_row = world.height // 2
+        self.origin_col = world.width // 2
+        self.spacing = 2
         self.faces = self.init_faces(SOLVED_FACES)
 
     def init_faces(self, initial_faces):
@@ -116,12 +32,32 @@ class CubeState:
 
         return faces
 
-    def render_face(self, face: Face):
-        for row in self.faces[face]:
-            for cell in row:
-                print(cell, end=" ")
-            print("")
+    def render(
+            self,
+            world: World, 
+            face: Face, 
+            origin_row: int, 
+            origin_col: int
+    ):
+        for face in self.faces:
+            (dr, dc) = FACE_OFFSETS[face]
+            face_origin_row = origin_row + dr
+            face_origin_col = origin_col + dc * self.spacing
+            self.render_face_into_world(world, face, face_origin_row, face_origin_col)
 
-# init 1 cube and print the front face
+    def render_face_into_world(
+            self, 
+            world: World, 
+            face: Face, 
+            origin_row: int, 
+            origin_col: int
+    ):
+        for r, row in enumerate(self.faces[face]):
+            for c, cell in enumerate(row):
+                world_row = origin_row + r
+                world_col = origin_col + (c * self.spacing)
+                world.set_cell(world_row, world_col, str(cell))
+
 cube = CubeState()
-cube.render_face(Face.FRONT)
+cube.render(world, Face.FRONT, cube.origin_row, cube.origin_col)
+world.render()
