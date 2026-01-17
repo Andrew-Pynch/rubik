@@ -1,5 +1,7 @@
 // WebSocket client for Rubik's Cube CV Debugger
 
+import { initCube3D, updateCubeState } from './cube3d.js';
+
 const WS_URL = `ws://${location.host}/ws`;
 const RECONNECT_BASE_DELAY = 1000;
 const RECONNECT_MAX_DELAY = 30000;
@@ -96,12 +98,32 @@ function handleMessage(data) {
     }
 }
 
-function refreshImages() {
+async function fetchCubeState() {
+    try {
+        const response = await fetch(`/output/state.json?t=${Date.now()}`);
+        if (!response.ok) {
+            if (response.status === 404) return null;  // Normal on startup
+            throw new Error(`HTTP ${response.status}`);
+        }
+        return await response.json();
+    } catch (error) {
+        console.warn('Failed to fetch cube state:', error.message);
+        return null;
+    }
+}
+
+async function refreshImages() {
     const timestamp = Date.now();
 
     // Refresh images with cache-busting query parameter
     rawImg.src = `/output/raw.jpg?t=${timestamp}`;
     debugImg.src = `/output/debug.jpg?t=${timestamp}`;
+
+    // Fetch and update 3D cube state
+    const state = await fetchCubeState();
+    if (state) {
+        updateCubeState(state);
+    }
 
     // Update last update time
     const now = new Date();
@@ -408,3 +430,26 @@ window.addEventListener('resize', () => {
         drawCalibration();
     }
 });
+
+// ============================================
+// 3D Cube Initialization
+// ============================================
+
+// Initialize cube after a short delay to ensure container is sized
+setTimeout(() => {
+    const cubeContainer = document.getElementById('cube-3d');
+    if (cubeContainer) {
+        console.log('Initializing 3D cube, container size:',
+            cubeContainer.clientWidth, 'x', cubeContainer.clientHeight);
+        const success = initCube3D(cubeContainer);
+        if (success) {
+            console.log('3D cube initialized successfully');
+            // Fetch initial state
+            fetchCubeState().then(state => {
+                if (state) updateCubeState(state);
+            });
+        } else {
+            console.error('Failed to initialize 3D cube');
+        }
+    }
+}, 100);

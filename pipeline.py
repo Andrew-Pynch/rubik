@@ -72,6 +72,113 @@ def preprocess(frame: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return rotated, hsv
 
 
+def order_polygon_corners(polygon: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Order polygon corners as: top-left, top-right, bottom-right, bottom-left.
+
+    Args:
+        polygon: List of 4 (x, y) corner points.
+
+    Returns:
+        Corners ordered as TL, TR, BR, BL.
+    """
+    pts = np.array(polygon)
+
+    # Sort by y first to get top vs bottom
+    sorted_by_y = pts[np.argsort(pts[:, 1])]
+    top_pts = sorted_by_y[:2]
+    bottom_pts = sorted_by_y[2:]
+
+    # Sort each pair by x to get left vs right
+    top_pts = top_pts[np.argsort(top_pts[:, 0])]
+    bottom_pts = bottom_pts[np.argsort(bottom_pts[:, 0])]
+
+    return [
+        tuple(top_pts[0]),
+        tuple(top_pts[1]),
+        tuple(bottom_pts[1]),
+        tuple(bottom_pts[0])
+    ]
+
+
+def perspective_grid_point(
+    col: int,
+    row: int,
+    ordered_corners: list[tuple[int, int]],
+) -> tuple[int, int]:
+    """Get image coordinates for a cell in the 3x3 grid.
+
+    Uses perspective transform to handle non-rectangular polygons.
+
+    Args:
+        col: Column index (0-2).
+        row: Row index (0-2).
+        ordered_corners: 4 corners in TL, TR, BR, BL order.
+
+    Returns:
+        (x, y) coordinates of cell center in image space.
+    """
+    src = np.array(ordered_corners, dtype=np.float32)
+    dst = np.array([[0, 0], [3, 0], [3, 3], [0, 3]], dtype=np.float32)
+
+    M = cv2.getPerspectiveTransform(dst, src)
+    pt = np.array([[[col + 0.5, row + 0.5]]], dtype=np.float32)
+    transformed = cv2.perspectiveTransform(pt, M)
+
+    return int(transformed[0, 0, 0]), int(transformed[0, 0, 1])
+
+
+def detect_face_grid(
+    hsv_frame: np.ndarray,
+    polygon: list[tuple[int, int]],
+    face_name: str,
+) -> list[list[str]] | None:
+    """Detect 3x3 color grid using perspective-corrected sampling.
+
+    This approach works for stickerless cubes where colors blend together.
+
+    Args:
+        hsv_frame: HSV image.
+        polygon: 4 corner points of face polygon.
+        face_name: Name of face for debugging.
+
+    Returns:
+        3x3 grid of color letters, or None if detection fails.
+    """
+    ordered = order_polygon_corners(polygon)
+
+    grid: list[list[str]] = []
+    for row in range(3):
+        row_colors: list[str] = []
+        for col in range(3):
+            x, y = perspective_grid_point(col, row, ordered)
+
+            # Bounds check
+            if not (0 <= y < hsv_frame.shape[0] and 0 <= x < hsv_frame.shape[1]):
+                row_colors.append('?')
+                continue
+
+            # Sample 15x15 region
+            y1, y2 = max(0, y - 7), min(hsv_frame.shape[0], y + 8)
+            x1, x2 = max(0, x - 7), min(hsv_frame.shape[1], x + 8)
+            region = hsv_frame[y1:y2, x1:x2]
+
+            if region.size == 0:
+                row_colors.append('?')
+                continue
+
+            hsv_values = region.reshape(-1, 3)
+            result = classify_color(hsv_values)
+
+            if result:
+                row_colors.append(result[1])  # color letter
+            else:
+                row_colors.append('?')
+
+        grid.append(row_colors)
+
+    return grid
+
+
 def create_polygon_mask(
     frame_shape: tuple[int, int, int],
     polygon: list[tuple[int, int]],
@@ -222,15 +329,15 @@ def detect_stickers_in_polygon(
         for contour in contours:
             # Filter by area (relative to polygon, not full frame)
             area = cv2.contourArea(contour)
-            min_area = poly_area * 0.01   # At least 1% of face
-            max_area = poly_area * 0.20   # At most 20% of face
+            min_area = poly_area * 0.005  # At least 0.5% of face
+            max_area = poly_area * 0.25   # At most 25% of face
             if not (min_area < area < max_area):
                 continue
 
-            # Filter by aspect ratio (should be roughly square)
+            # Filter by aspect ratio (relaxed for stickerless cube pillows)
             x, y, w, h = cv2.boundingRect(contour)
             aspect = w / h if h > 0 else 0
-            if not (0.4 < aspect < 2.5):
+            if not (0.3 < aspect < 3.5):
                 continue
 
             # Get center point
@@ -408,13 +515,15 @@ def draw_debug_overlay(
     frame: np.ndarray,
     faces: dict[str, list[DetectedSticker]],
     face_polygons: dict[str, list[tuple[int, int]]] | None,
+    colors: dict[str, list[list[str]]] | None = None,
 ) -> np.ndarray:
-    """Draw detected contours and color labels on frame.
+    """Draw detected stickers and grid points on frame.
 
     Args:
         frame: BGR frame to annotate.
-        faces: Grouped face stickers.
+        faces: Grouped face stickers (from contour detection).
         face_polygons: Face polygon ROIs to draw (or None).
+        colors: Grid-based color detection results (or None).
 
     Returns:
         Annotated frame.
@@ -422,67 +531,85 @@ def draw_debug_overlay(
     debug = frame.copy()
 
     # Face polygon colors
-    face_colors = {
+    face_draw_colors = {
         'U': (255, 255, 255),  # White
         'L': (0, 0, 255),      # Red
         'R': (255, 100, 0),    # Blue
     }
 
-    # Draw face polygon ROIs
-    if face_polygons:
-        for face_name, polygon in face_polygons.items():
-            color = face_colors.get(face_name, (255, 255, 0))
-            pts = np.array(polygon, dtype=np.int32)
-            cv2.polylines(debug, [pts], isClosed=True, color=color, thickness=2)
-
-    # Color map for drawing stickers
-    color_bgr = {
-        'white': (255, 255, 255),
-        'yellow': (0, 255, 255),
-        'orange': (0, 165, 255),
-        'red': (0, 0, 255),
-        'green': (0, 255, 0),
-        'blue': (255, 0, 0),
+    # Color letter to BGR
+    letter_bgr = {
+        'W': (255, 255, 255),
+        'Y': (0, 255, 255),
+        'O': (0, 165, 255),
+        'R': (0, 0, 255),
+        'G': (0, 255, 0),
+        'B': (255, 0, 0),
+        '?': (128, 128, 128),
     }
 
-    # Draw all detected stickers and face labels
     total_stickers = 0
-    for face_name, face_stickers in faces.items():
-        if not face_stickers:
-            continue
 
-        total_stickers += len(face_stickers)
+    # Draw face polygons and grid points
+    if face_polygons:
+        for face_name, polygon in face_polygons.items():
+            poly_color = face_draw_colors.get(face_name, (255, 255, 0))
+            pts = np.array(polygon, dtype=np.int32)
+            cv2.polylines(debug, [pts], isClosed=True, color=poly_color, thickness=2)
 
-        for sticker in face_stickers:
-            bgr = color_bgr.get(sticker.color_name, (128, 128, 128))
-            cv2.drawContours(debug, [sticker.contour], -1, bgr, 2)
-            cv2.putText(
-                debug,
-                sticker.color_letter,
-                (sticker.center[0] - 10, sticker.center[1] + 10),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                bgr,
-                2,
-            )
+            # Draw grid sampling points if we have grid results
+            if colors and face_name in colors:
+                ordered = order_polygon_corners(polygon)
+                grid = colors[face_name]
 
-        # Draw face label
-        avg_x = int(np.mean([s.center[0] for s in face_stickers]))
-        avg_y = int(np.mean([s.center[1] for s in face_stickers]))
-        cv2.putText(
-            debug,
-            f"[{face_name}]",
-            (avg_x - 20, avg_y - 50),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1.0,
-            (255, 255, 255),
-            2,
-        )
+                for row in range(3):
+                    for col in range(3):
+                        x, y = perspective_grid_point(col, row, ordered)
+                        letter = grid[row][col]
+                        bgr = letter_bgr.get(letter, (128, 128, 128))
 
-    # Add status text
+                        # Draw filled circle at sample point
+                        cv2.circle(debug, (x, y), 12, bgr, -1)
+                        cv2.circle(debug, (x, y), 12, (0, 0, 0), 2)
+
+                        # Draw letter
+                        cv2.putText(
+                            debug, letter, (x - 8, y + 6),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2,
+                        )
+
+                        if letter != '?':
+                            total_stickers += 1
+
+                # Face label
+                cx = int(np.mean([p[0] for p in polygon]))
+                cy = int(np.mean([p[1] for p in polygon]))
+                cv2.putText(
+                    debug, f"[{face_name}]", (cx - 20, cy - 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2,
+                )
+
+    # Fall back to contour-based overlay if no grid results
+    elif faces:
+        color_bgr = {
+            'white': (255, 255, 255), 'yellow': (0, 255, 255),
+            'orange': (0, 165, 255), 'red': (0, 0, 255),
+            'green': (0, 255, 0), 'blue': (255, 0, 0),
+        }
+
+        for face_name, face_stickers in faces.items():
+            if not face_stickers:
+                continue
+            total_stickers += len(face_stickers)
+            for sticker in face_stickers:
+                bgr = color_bgr.get(sticker.color_name, (128, 128, 128))
+                cv2.drawContours(debug, [sticker.contour], -1, bgr, 2)
+
+    # Status text
+    num_faces = len(colors) if colors else len(faces)
     cv2.putText(
         debug,
-        f"Detected: {total_stickers} stickers, {len(faces)} faces",
+        f"Detected: {total_stickers} stickers, {num_faces} faces",
         (10, 30),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.7,
@@ -490,7 +617,6 @@ def draw_debug_overlay(
         2,
     )
 
-    # Add calibration warning if no polygons
     if not face_polygons:
         cv2.putText(
             debug,
@@ -536,26 +662,35 @@ def run_pipeline() -> CubeState | None:
     if face_polygons:
         print(f"Using calibrated face polygons: {list(face_polygons.keys())}")
 
-        # Detect stickers using polygon ROIs
-        print("Detecting stickers in face polygons...")
-        faces = detect_all_faces(hsv_frame, face_polygons)
+        # Use grid-based detection (works for stickerless cubes)
+        print("Detecting colors using grid sampling...")
+        colors: dict[str, list[list[str]]] = {}
 
-        total_stickers = sum(len(s) for s in faces.values())
-        print(f"Found {total_stickers} stickers in {len(faces)} faces")
+        for face_name, polygon in face_polygons.items():
+            grid = detect_face_grid(hsv_frame, polygon, face_name)
+            if grid:
+                colors[face_name] = grid
+                # Count detected (non-'?') stickers
+                detected = sum(1 for row in grid for c in row if c != '?')
+                print(f"  {face_name}: {detected}/9 stickers detected")
+
+        total = sum(sum(1 for row in g for c in row if c != '?') for g in colors.values())
+        print(f"Total: {total} stickers in {len(colors)} faces")
+
+        # Create empty faces dict for debug overlay (no contours in grid mode)
+        faces: dict[str, list[DetectedSticker]] = {}
     else:
         print("WARNING: No calibration found - detection will be limited")
         print("Use the web UI to calibrate face polygons")
         faces = {}
-
-    # Extract colors
-    colors = extract_face_colors(faces)
+        colors = {}
 
     # Create cube state
     confidence = len(colors) / 3.0  # 3 visible faces expected
     state = CubeState.from_detected(colors, confidence=min(confidence, 1.0))
 
     # Save debug overlay
-    debug_frame = draw_debug_overlay(bgr_frame, faces, face_polygons)
+    debug_frame = draw_debug_overlay(bgr_frame, faces, face_polygons, colors)
     debug_path = OUTPUT_DIR / "debug.jpg"
     cv2.imwrite(str(debug_path), debug_frame)
     print(f"Saved: {debug_path}")

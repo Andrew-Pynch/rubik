@@ -5,6 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Rubik's Cube CV Debugger</title>
     <link rel="stylesheet" href="/static/style.css">
+
+    <!-- Three.js import map for ES modules -->
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+        }
+    }
+    </script>
 </head>
 <body>
     <header>
@@ -59,8 +69,8 @@
 
         <section class="panel">
             <h2>3D Cube</h2>
-            <div class="cube-placeholder" id="cube-3d">
-                <p>3D visualization coming soon</p>
+            <div class="cube-container" id="cube-3d">
+                <!-- Three.js canvas will be inserted here -->
             </div>
         </section>
     </main>
@@ -72,6 +82,6 @@
         </div>
     </footer>
 
-    <script src="/static/app.js"></script>
+    <script type="module" src="/static/app.js"></script>
 </body>
 </html>

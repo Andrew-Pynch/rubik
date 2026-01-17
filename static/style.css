@@ -71,6 +71,8 @@ main.panel-container {
     grid-template-columns: repeat(3, 1fr);
     gap: 1rem;
     padding: 1rem;
+    overflow-y: auto;
+    min-height: 0;  /* Allow shrinking in flex */
 }
 
 /* Individual panels */
@@ -106,15 +108,19 @@ main.panel-container {
     object-fit: contain;
 }
 
-.cube-placeholder {
+.cube-container {
     flex: 1;
     display: flex;
     align-items: center;
     justify-content: center;
     background-color: #1a1a1a;
     border-radius: 4px;
-    color: #666;
-    font-style: italic;
+    min-height: 300px;
+    overflow: hidden;
+}
+
+.cube-container canvas {
+    display: block;
 }
 
 /* Footer status bar */
@@ -293,5 +299,24 @@ footer {
     header {
         flex-direction: column;
         gap: 0.5rem;
+    }
+}
+
+/* Vertical/portrait monitor: stack panels and allow scroll */
+@media (max-aspect-ratio: 1/1) {
+    main.panel-container {
+        grid-template-columns: 1fr;
+        grid-auto-rows: minmax(400px, auto);
+    }
+
+    .panel {
+        min-height: 400px;
+    }
+}
+
+/* Very tall narrow screens */
+@media (max-width: 800px) and (min-height: 900px) {
+    main.panel-container {
+        grid-template-columns: 1fr;
     }
 }

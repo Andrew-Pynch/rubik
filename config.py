@@ -48,14 +48,14 @@ FACE_POLYGONS = load_face_polygons()
 # HSV color ranges for detection
 # Format: {'h': (min, max), 's': (min, max), 'v': (min, max)}
 # Note: red wraps around 0/180, so it has two hue ranges
-# Tuned for stickerless cube under indoor lighting - 2026-01-17
+# Tuned for stickerless cube under warm indoor lighting - 2026-01-17
 COLOR_RANGES = {
-    'white':  {'h': (0, 180), 's': (0, 60), 'v': (100, 255)},
-    'yellow': {'h': (15, 35), 's': (100, 255), 'v': (150, 255)},
-    'orange': {'h': (8, 18), 's': (150, 255), 'v': (150, 255)},
-    'red':    {'h': [(0, 12), (165, 180)], 's': (100, 255), 'v': (40, 255)},
-    'green':  {'h': (50, 90), 's': (100, 255), 'v': (80, 255)},
-    'blue':   {'h': (95, 130), 's': (100, 255), 'v': (40, 255)},
+    'white':  {'h': (0, 180), 's': (0, 80), 'v': (180, 255)},    # High value, low-medium sat
+    'yellow': {'h': (18, 40), 's': (80, 255), 'v': (150, 255)},  # Warm yellow
+    'orange': {'h': (5, 20), 's': (150, 255), 'v': (150, 255)},  # Orange-red
+    'red':    {'h': [(0, 10), (170, 180)], 's': (120, 255), 'v': (80, 255)},  # Saturated red
+    'green':  {'h': (45, 85), 's': (80, 255), 'v': (80, 255)},   # Green range
+    'blue':   {'h': (90, 130), 's': (80, 255), 'v': (80, 255)},  # Blue range
 }
 
 # Color name to single letter mapping (for state representation)

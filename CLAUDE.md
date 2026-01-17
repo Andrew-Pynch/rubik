@@ -63,3 +63,18 @@ When viewing through camera (after rotation):
 - `kociemba`: Rubik's cube solver algorithm
 - `fastapi` + `uvicorn`: Web server (future)
 - `watchdog`: File watching for live updates (future)
+- ultrathink
+● The raw.jpg is already rotated (1920 height x 1080 width). My debug script was
+  double-rotating! The calibration should work - let me fix the sampling:
+
+● Bash(.venv/bin/python << 'EOF'
+      import cv2…)
+  ⎿  raw.jpg shape: (1920, 1080, 3) (H x W)
+
+     Sampling HSV at face polygon centers (from calibration):
+     … +5 lines (ctrl+o to expand)
+
+
+instead of doing EOF scripts in cli like this, can you just have a /experiments folder with simple little python scripts that you can just run? I dont want to have to keep waiting to approve everytime you need to ask to write to cli like this instead of writing code and running it in auto accept edits.
+
+when code is useful enough bring it into the main root of the repo and integrate in appropriate place
