@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rubik's Cube CV Debugger</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header>
+        <h1>Rubik's Cube CV Debugger</h1>
+        <div class="header-controls">
+            <button id="calibrate-btn" class="btn">Calibrate</button>
+            <div class="connection-status">
+                <span id="status-indicator" class="indicator disconnected"></span>
+                <span id="status-text">Disconnected</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- Calibration overlay -->
+    <div id="calibration-overlay" class="hidden">
+        <div class="calibration-content">
+            <h2>Face Calibration</h2>
+            <p id="calibration-instruction">Click the 8 cube vertices in order:</p>
+            <div class="vertex-list">
+                <span class="vertex" data-idx="0">1. White face - BACK LEFT corner</span>
+                <span class="vertex" data-idx="1">2. White face - BACK RIGHT corner</span>
+                <span class="vertex" data-idx="2">3. White/Red edge - LEFT corner</span>
+                <span class="vertex" data-idx="3">4. CENTER - where White/Red/Blue meet</span>
+                <span class="vertex" data-idx="4">5. Red face - BOTTOM LEFT corner</span>
+                <span class="vertex" data-idx="5">6. Red/Blue edge - BOTTOM CENTER</span>
+                <span class="vertex" data-idx="6">7. Blue face - BACK RIGHT corner</span>
+                <span class="vertex" data-idx="7">8. Blue face - BOTTOM RIGHT corner</span>
+            </div>
+            <div class="calibration-actions">
+                <button id="calibration-reset" class="btn btn-secondary">Reset</button>
+                <button id="calibration-save" class="btn btn-primary" disabled>Save</button>
+                <button id="calibration-cancel" class="btn btn-secondary">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <main class="panel-container">
+        <section class="panel">
+            <h2>Raw Frame</h2>
+            <div class="image-container" id="raw-container">
+                <img id="raw-img" src="/output/raw.jpg" alt="Raw camera frame">
+                <canvas id="calibration-canvas"></canvas>
+            </div>
+        </section>
+
+        <section class="panel">
+            <h2>Debug Frame</h2>
+            <div class="image-container">
+                <img id="debug-img" src="/output/debug.jpg" alt="Debug overlay">
+            </div>
+        </section>
+
+        <section class="panel">
+            <h2>3D Cube</h2>
+            <div class="cube-placeholder" id="cube-3d">
+                <p>3D visualization coming soon</p>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <div class="status-bar">
+            <span>Status: <strong id="connection-state">Connecting...</strong></span>
+            <span>Last update: <strong id="last-update">--:--:--</strong></span>
+        </div>
+    </footer>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
