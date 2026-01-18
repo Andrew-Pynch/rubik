@@ -212,6 +212,27 @@ async def save_calibration(data: CalibrationData):
     return {"status": "ok", "path": str(calibration_path)}
 
 
+@app.post("/save-calibration-defaults")
+async def save_calibration_defaults():
+    """Copy current calibration to defaults folder."""
+    import shutil
+
+    current = OUTPUT_DIR / "calibration.json"
+    defaults_dir = BASE_DIR / "defaults"
+    defaults_path = defaults_dir / "calibration.json"
+
+    if not current.exists():
+        return {"error": "No calibration exists to save"}
+
+    defaults_dir.mkdir(exist_ok=True)
+
+    # Copy current calibration to defaults
+    shutil.copy(current, defaults_path)
+
+    print(f"Calibration defaults saved to {defaults_path}")
+    return {"status": "ok", "message": "Calibration saved as default"}
+
+
 def get_current_frame():
     """Get current frame - from stream buffer if available, otherwise fresh capture."""
     global _stream_frame

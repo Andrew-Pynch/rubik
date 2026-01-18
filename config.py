@@ -16,19 +16,30 @@ CUBE_SIZE_MM = 57  # Standard 3x3
 # Paths
 OUTPUT_DIR = Path(__file__).parent / "output"
 CALIBRATION_PATH = OUTPUT_DIR / "calibration.json"
+DEFAULTS_DIR = Path(__file__).parent / "defaults"
+DEFAULT_CALIBRATION_PATH = DEFAULTS_DIR / "calibration.json"
 
 
 def load_face_polygons() -> dict[str, list[tuple[int, int]]] | None:
     """Load face polygon ROIs from calibration.json.
 
+    Tries output/calibration.json first (user session), then falls back
+    to defaults/calibration.json (application defaults).
+
     Returns:
         Dict mapping face name (U, F, R) to list of 4 corner points,
-        or None if calibration file doesn't exist.
+        or None if no calibration file exists.
     """
-    if not CALIBRATION_PATH.exists():
+    # Try output calibration first (user's current session)
+    if CALIBRATION_PATH.exists():
+        path = CALIBRATION_PATH
+    # Fallback to defaults (checked into repo)
+    elif DEFAULT_CALIBRATION_PATH.exists():
+        path = DEFAULT_CALIBRATION_PATH
+    else:
         return None
 
-    with open(CALIBRATION_PATH) as f:
+    with open(path) as f:
         data = json.load(f)
 
     face_polygons = data.get('face_polygons')

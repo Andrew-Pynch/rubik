@@ -104,6 +104,7 @@ def perspective_grid_point(
     col: int,
     row: int,
     ordered_corners: list[tuple[int, int]],
+    inward_bias: float = 0.0,
 ) -> tuple[int, int]:
     """Get image coordinates for a cell in the 3x3 grid.
 
@@ -113,6 +114,9 @@ def perspective_grid_point(
         col: Column index (0-2).
         row: Row index (0-2).
         ordered_corners: 4 corners in TL, TR, BR, BL order.
+        inward_bias: Bias to pull corner samples toward center (0.0-0.3).
+            Applied only to edge cells (col/row 0 or 2) to avoid sampling
+            outside the sticker area.
 
     Returns:
         (x, y) coordinates of cell center in image space.
@@ -120,8 +124,24 @@ def perspective_grid_point(
     src = np.array(ordered_corners, dtype=np.float32)
     dst = np.array([[0, 0], [3, 0], [3, 3], [0, 3]], dtype=np.float32)
 
+    # Calculate sample point with optional inward bias for edges
+    col_offset = 0.5
+    row_offset = 0.5
+
+    if inward_bias > 0:
+        # Pull edge cells toward center to avoid sampling outside stickers
+        if col == 0:
+            col_offset += inward_bias
+        elif col == 2:
+            col_offset -= inward_bias
+
+        if row == 0:
+            row_offset += inward_bias
+        elif row == 2:
+            row_offset -= inward_bias
+
     M = cv2.getPerspectiveTransform(dst, src)
-    pt = np.array([[[col + 0.5, row + 0.5]]], dtype=np.float32)
+    pt = np.array([[[col + col_offset, row + row_offset]]], dtype=np.float32)
     transformed = cv2.perspectiveTransform(pt, M)
 
     return int(transformed[0, 0, 0]), int(transformed[0, 0, 1])
@@ -131,6 +151,7 @@ def detect_face_grid(
     hsv_frame: np.ndarray,
     polygon: list[tuple[int, int]],
     face_name: str,
+    inward_bias: float = 0.15,
 ) -> list[list[str]] | None:
     """Detect 3x3 color grid using perspective-corrected sampling.
 
@@ -141,6 +162,8 @@ def detect_face_grid(
         hsv_frame: HSV image.
         polygon: 4 corner points of face polygon.
         face_name: Name of face for debugging.
+        inward_bias: Bias to pull edge samples toward center (default 0.15).
+            Helps avoid sampling outside stickers at polygon edges.
 
     Returns:
         3x3 grid of color letters, or None if detection fails.
@@ -151,7 +174,7 @@ def detect_face_grid(
     for row in range(3):
         row_colors: list[str] = []
         for col in range(3):
-            x, y = perspective_grid_point(col, row, ordered)
+            x, y = perspective_grid_point(col, row, ordered, inward_bias)
 
             # Bounds check
             if not (0 <= y < hsv_frame.shape[0] and 0 <= x < hsv_frame.shape[1]):

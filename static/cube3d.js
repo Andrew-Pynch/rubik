@@ -243,7 +243,7 @@ function getCubiePosition(faceName, row, col) {
         case 'U':  // Looking down at top face
             x = col - 1;
             y = 1;
-            z = 1 - row;  // row 0 = back (z=1), row 2 = front (z=-1)
+            z = row - 1;  // row 0 = back (z=-1), row 2 = front (z=1)
             break;
         case 'D':  // Looking up at bottom face
             x = col - 1;
@@ -258,7 +258,7 @@ function getCubiePosition(faceName, row, col) {
         case 'R':  // Looking at right face from right side
             x = 1;
             y = 1 - row;
-            z = col - 1;  // col 0 = front, col 2 = back
+            z = 1 - col;  // col 0 = front (z=1), col 2 = back (z=-1)
             break;
         case 'F':  // Looking at front face
             x = col - 1;

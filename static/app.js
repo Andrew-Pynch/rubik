@@ -438,6 +438,31 @@ calibrationSave.addEventListener('click', saveCalibration);
 calibrationCancel.addEventListener('click', exitCalibrationMode);
 rawImg.addEventListener('click', handleImageClick);
 
+// ============================================
+// Save ROI Defaults
+// ============================================
+
+const saveDefaultsBtn = document.getElementById('save-defaults-btn');
+
+async function saveCalibrationDefaults() {
+    try {
+        const response = await fetch('/save-calibration-defaults', { method: 'POST' });
+        const result = await response.json();
+
+        if (result.status === 'ok') {
+            showToast('ROI calibration saved as default', 'success');
+        } else {
+            showToast('Failed: ' + (result.error || 'Unknown error'), 'error');
+        }
+    } catch (error) {
+        showToast('Error: ' + error.message, 'error');
+    }
+}
+
+if (saveDefaultsBtn) {
+    saveDefaultsBtn.addEventListener('click', saveCalibrationDefaults);
+}
+
 // Re-setup canvas when image loads or resizes
 rawImg.addEventListener('load', () => {
     if (calibrationMode) {
