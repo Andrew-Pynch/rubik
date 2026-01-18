@@ -317,14 +317,27 @@ function animate() {
 // State Update
 // ============================================
 
+/**
+ * Update cube visualization with new state data.
+ *
+ * @param {Object} stateData - State object with faces and optionally face_confidences
+ * @param {Object} stateData.faces - Dict mapping face name to 3x3 color grid
+ * @param {Object} stateData.face_confidences - Optional dict mapping face name to 3x3 confidence grid
+ */
 export function updateCubeState(stateData) {
     if (!stateData || !stateData.faces) {
         console.warn('cube3d: Invalid state data');
         return;
     }
 
+    // Get confidence data if available
+    const faceConfidences = stateData.face_confidences || {};
+
     for (const [faceName, grid] of Object.entries(stateData.faces)) {
         if (!stickers[faceName]) continue;
+
+        // Get confidence grid for this face (or null)
+        const confGrid = faceConfidences[faceName] || null;
 
         for (let row = 0; row < 3; row++) {
             for (let col = 0; col < 3; col++) {
@@ -337,12 +350,65 @@ export function updateCubeState(stateData) {
                     colorLetter = grid[row][col];
                 }
 
+                // Get confidence (default 1.0 if not available)
+                let confidence = 1.0;
+                if (confGrid && Array.isArray(confGrid[row]) && confGrid[row][col] !== undefined) {
+                    confidence = confGrid[row][col];
+                }
+
                 // Update material color
                 const color = COLOR_MAP[colorLetter] ?? COLOR_MAP['?'];
                 mesh.material.color.setHex(color);
+
+                // Apply confidence-based visual effects
+                applyConfidenceVisualization(mesh, colorLetter, confidence);
             }
         }
     }
+}
+
+/**
+ * Apply confidence-based visual effects to a sticker mesh.
+ *
+ * - High confidence (>=0.7): Solid, fully opaque
+ * - Medium confidence (0.4-0.7): Slightly transparent
+ * - Low confidence (<0.4): More transparent, darker tint
+ *
+ * @param {THREE.Mesh} mesh - The sticker mesh
+ * @param {string} colorLetter - The detected color letter
+ * @param {number} confidence - Confidence score (0.0-1.0)
+ */
+function applyConfidenceVisualization(mesh, colorLetter, confidence) {
+    // Handle unknown stickers specially
+    if (colorLetter === '?') {
+        mesh.material.transparent = true;
+        mesh.material.opacity = 0.5;
+        mesh.material.emissive = new THREE.Color(0x000000);
+        return;
+    }
+
+    // High confidence: fully opaque, no effects
+    if (confidence >= 0.7) {
+        mesh.material.transparent = false;
+        mesh.material.opacity = 1.0;
+        mesh.material.emissive = new THREE.Color(0x000000);
+        return;
+    }
+
+    // Medium confidence: slight transparency
+    if (confidence >= 0.4) {
+        mesh.material.transparent = true;
+        mesh.material.opacity = 0.7 + (confidence - 0.4) * 1.0;  // 0.7-1.0 range
+        mesh.material.emissive = new THREE.Color(0x000000);
+        return;
+    }
+
+    // Low confidence: more transparent, subtle dark tint
+    mesh.material.transparent = true;
+    mesh.material.opacity = 0.5 + confidence * 0.5;  // 0.5-0.7 range
+    // Add slight emissive to indicate uncertainty (dark reddish glow)
+    const emissiveIntensity = (0.4 - confidence) * 0.15;  // Max 0.06 at conf=0
+    mesh.material.emissive = new THREE.Color(emissiveIntensity * 2, 0, 0);
 }
 
 // ============================================

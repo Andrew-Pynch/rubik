@@ -388,6 +388,13 @@ async def get_debug_state():
     }
 
 
+@app.get("/camera/status")
+async def camera_status():
+    """Get camera connection status."""
+    from pipeline import get_camera_manager
+    return get_camera_manager().get_status()
+
+
 # ============================================
 # Real-time MJPEG Streaming
 # ============================================

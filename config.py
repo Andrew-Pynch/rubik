@@ -5,6 +5,7 @@ from pathlib import Path
 
 # Camera configuration
 CAMERA_URL = "http://192.168.1.237:8081/video"
+CAMERA_TIMEOUT_MS = 5000  # 5 second timeout (vs FFmpeg's 30s default)
 CAMERA_DISTANCE_MM = 150
 CAMERA_PITCH_DEG = 53.5    # Downward tilt
 CAMERA_ROLL_DEG = -21.5    # Rightward tilt

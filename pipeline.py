@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,6 +13,7 @@ import numpy as np
 
 from config import (
     CAMERA_ROTATION,
+    CAMERA_TIMEOUT_MS,
     CAMERA_URL,
     COLOR_LETTERS,
     COLOR_RANGES,
@@ -20,6 +22,12 @@ from config import (
     load_face_polygons,
 )
 from cube_model import CubeState
+from detection import (
+    StickerSample,
+    detect_face_grid_robust,
+    sample_sticker_multipoint,
+    classify_sticker,
+)
 
 
 @dataclass
@@ -32,23 +40,90 @@ class DetectedSticker:
     color_letter: str
 
 
+class CameraManager:
+    """Manages persistent camera connection with auto-reconnect."""
+
+    def __init__(self, url: str, timeout_ms: int = 5000):
+        self.url = url
+        self.timeout_ms = timeout_ms
+        self.cap: cv2.VideoCapture | None = None
+        self.connected = False
+        self.last_error: str | None = None
+        self._lock = threading.Lock()
+
+    def _connect(self) -> bool:
+        """Establish camera connection with timeout."""
+        if self.cap:
+            self.cap.release()
+            self.cap = None
+
+        # Create VideoCapture with FFmpeg backend
+        self.cap = cv2.VideoCapture(self.url, cv2.CAP_FFMPEG)
+
+        # Set timeouts (may not work on all OpenCV builds)
+        self.cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, self.timeout_ms)
+        self.cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, self.timeout_ms)
+
+        if self.cap.isOpened():
+            self.connected = True
+            self.last_error = None
+            return True
+        else:
+            self.connected = False
+            self.last_error = "Failed to open camera"
+            return False
+
+    def get_frame(self) -> np.ndarray | None:
+        """Get a frame, reconnecting if needed."""
+        with self._lock:
+            if not self.connected or self.cap is None:
+                if not self._connect():
+                    return None
+
+            ret, frame = self.cap.read()
+            if not ret:
+                self.connected = False
+                self.last_error = "Frame read failed"
+                return None
+
+            return frame
+
+    def get_status(self) -> dict:
+        """Return connection status for UI."""
+        return {
+            "connected": self.connected,
+            "error": self.last_error,
+            "url": self.url
+        }
+
+    def disconnect(self):
+        """Release camera connection."""
+        with self._lock:
+            if self.cap:
+                self.cap.release()
+                self.cap = None
+            self.connected = False
+
+
+# Global camera manager instance
+_camera_manager: CameraManager | None = None
+
+
+def get_camera_manager() -> CameraManager:
+    """Get or create the global camera manager."""
+    global _camera_manager
+    if _camera_manager is None:
+        _camera_manager = CameraManager(CAMERA_URL, timeout_ms=CAMERA_TIMEOUT_MS)
+    return _camera_manager
+
+
 def capture_frame() -> np.ndarray | None:
-    """Capture single frame from IP camera.
+    """Capture single frame from IP camera using persistent connection.
 
     Returns:
         Captured frame or None if capture failed.
     """
-    cap = cv2.VideoCapture(CAMERA_URL)
-    if not cap.isOpened():
-        return None
-
-    ret, frame = cap.read()
-    cap.release()
-
-    if not ret:
-        return None
-
-    return frame
+    return get_camera_manager().get_frame()
 
 
 def preprocess(frame: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -734,6 +809,8 @@ def process_frame_for_stream(
 ) -> np.ndarray:
     """Process a single frame for streaming with detection overlay.
 
+    Uses robust multi-point detection and shows confidence visually.
+
     Args:
         bgr_frame: BGR frame to annotate.
         hsv_frame: HSV frame for color classification.
@@ -778,6 +855,8 @@ def process_frame_for_stream(
     }
 
     total_stickers = 0
+    total_confidence = 0.0
+    num_confidences = 0
 
     for face_name, polygon in face_polygons.items():
         poly_color = face_draw_colors.get(face_name, (255, 255, 0))
@@ -787,45 +866,73 @@ def process_frame_for_stream(
         # Draw grid lines
         draw_grid_lines(debug, polygon)
 
-        # Detect colors using grid sampling
-        grid = detect_face_grid_with_offsets(hsv_frame, polygon, face_name, hsv_offsets)
-        if grid:
-            ordered = order_polygon_corners(polygon)
-            for row in range(3):
-                for col in range(3):
-                    x, y = perspective_grid_point(col, row, ordered)
-                    letter = grid[row][col]
-                    bgr = letter_bgr.get(letter, (128, 128, 128))
+        # Detect colors with confidence using robust sampling
+        result = detect_face_grid_with_offsets(
+            hsv_frame, polygon, face_name, hsv_offsets, return_confidence=True
+        )
 
-                    # Draw filled circle at sample point
-                    cv2.circle(debug, (x, y), 12, bgr, -1)
-                    cv2.circle(debug, (x, y), 12, (0, 0, 0), 2)
+        if result is None:
+            continue
 
-                    # Draw letter
-                    cv2.putText(
-                        debug, letter, (x - 8, y + 6),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2,
-                    )
+        # Handle both tuple (with confidence) and list-only (legacy fallback)
+        if isinstance(result, tuple):
+            grid, confidences = result
+        else:
+            grid = result
+            confidences = [[0.5] * 3 for _ in range(3)]  # Default confidence
 
-                    if letter != '?':
-                        total_stickers += 1
+        ordered = order_polygon_corners(polygon)
+        for row in range(3):
+            for col in range(3):
+                x, y = perspective_grid_point(col, row, ordered)
+                letter = grid[row][col]
+                conf = confidences[row][col] if confidences else 0.5
+                bgr = letter_bgr.get(letter, (128, 128, 128))
 
-            # Face label
-            cx = int(np.mean([p[0] for p in polygon]))
-            cy = int(np.mean([p[1] for p in polygon]))
-            cv2.putText(
-                debug, f"[{face_name}]", (cx - 20, cy - 60),
-                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2,
-            )
+                # Draw filled circle at sample point
+                cv2.circle(debug, (x, y), 12, bgr, -1)
 
-    # Status text
+                # Draw confidence ring: green=high, yellow=medium, red=low
+                if conf >= 0.7:
+                    ring_color = (0, 200, 0)  # Green
+                    ring_thickness = 2
+                elif conf >= 0.4:
+                    ring_color = (0, 200, 200)  # Yellow
+                    ring_thickness = 2
+                else:
+                    ring_color = (0, 0, 200)  # Red
+                    ring_thickness = 3  # Thicker for low confidence
+                cv2.circle(debug, (x, y), 12, ring_color, ring_thickness)
+
+                # Draw letter
+                cv2.putText(
+                    debug, letter, (x - 8, y + 6),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2,
+                )
+
+                if letter != '?':
+                    total_stickers += 1
+                total_confidence += conf
+                num_confidences += 1
+
+        # Face label with average confidence
+        face_avg_conf = sum(sum(row) for row in confidences) / 9 if confidences else 0
+        cx = int(np.mean([p[0] for p in polygon]))
+        cy = int(np.mean([p[1] for p in polygon]))
+        cv2.putText(
+            debug, f"[{face_name}] {face_avg_conf:.0%}", (cx - 40, cy - 60),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2,
+        )
+
+    # Status text with average confidence
+    avg_conf = total_confidence / num_confidences if num_confidences > 0 else 0
     cv2.putText(
         debug,
-        f"Detected: {total_stickers} stickers, {len(face_polygons)} faces",
+        f"Detected: {total_stickers} stickers, {len(face_polygons)} faces | Conf: {avg_conf:.0%}",
         (10, 30),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.7,
-        (0, 255, 0),
+        (0, 255, 0) if avg_conf >= 0.6 else (0, 200, 200),
         2,
     )
 
@@ -837,8 +944,43 @@ def detect_face_grid_with_offsets(
     polygon: list[tuple[int, int]],
     face_name: str,
     hsv_offsets: dict | None = None,
-) -> list[list[str]] | None:
+    return_confidence: bool = False,
+) -> list[list[str]] | tuple[list[list[str]], list[list[float]]] | None:
     """Detect 3x3 color grid with optional HSV offsets.
+
+    Uses robust multi-point sampling with outlier rejection.
+
+    Args:
+        hsv_frame: HSV image.
+        polygon: 4 corner points of face polygon.
+        face_name: Name of face for debugging.
+        hsv_offsets: Optional dict with 'h', 's', 'v' offset values.
+        return_confidence: If True, return (colors, confidences) tuple.
+
+    Returns:
+        3x3 grid of color letters, or (colors, confidences) if return_confidence=True,
+        or None if detection fails.
+    """
+    try:
+        colors, confidences, _ = detect_face_grid_robust(
+            hsv_frame, polygon, face_name, hsv_offsets
+        )
+        if return_confidence:
+            return colors, confidences
+        return colors
+    except Exception as e:
+        print(f"Warning: Robust detection failed for {face_name}: {e}")
+        # Fall back to original single-point detection
+        return _detect_face_grid_legacy(hsv_frame, polygon, face_name, hsv_offsets)
+
+
+def _detect_face_grid_legacy(
+    hsv_frame: np.ndarray,
+    polygon: list[tuple[int, int]],
+    face_name: str,
+    hsv_offsets: dict | None = None,
+) -> list[list[str]] | None:
+    """Legacy single-point detection (fallback).
 
     Args:
         hsv_frame: HSV image.
@@ -988,7 +1130,8 @@ def detect_current_frame() -> dict[str, list[list[str]]] | None:
 def detect_from_frames(
     bgr_frame: np.ndarray,
     hsv_frame: np.ndarray,
-) -> dict[str, list[list[str]]] | None:
+    return_confidence: bool = False,
+) -> dict[str, list[list[str]]] | tuple[dict[str, list[list[str]]], dict[str, list[list[float]]]] | None:
     """Detect faces from pre-captured frames.
 
     Used when livestream is running and we already have frames.
@@ -996,9 +1139,11 @@ def detect_from_frames(
     Args:
         bgr_frame: Preprocessed BGR frame.
         hsv_frame: Preprocessed HSV frame.
+        return_confidence: If True, return (colors, confidences) tuple.
 
     Returns:
         Dict mapping positional face names (U/F/R) to 3x3 color grids,
+        or (colors, confidences) tuple if return_confidence=True,
         or None if detection failed.
     """
     # Load face polygons
@@ -1006,12 +1151,23 @@ def detect_from_frames(
     if not face_polygons:
         return None
 
-    # Detect each face
+    # Detect each face with confidence
     colors: dict[str, list[list[str]]] = {}
+    confidences: dict[str, list[list[float]]] = {}
+
     for face_name, polygon in face_polygons.items():
-        grid = detect_face_grid(hsv_frame, polygon, face_name)
-        if grid:
-            colors[face_name] = grid
+        result = detect_face_grid_with_offsets(
+            hsv_frame, polygon, face_name, return_confidence=True
+        )
+        if result:
+            if isinstance(result, tuple):
+                grid, conf_grid = result
+                colors[face_name] = grid
+                confidences[face_name] = conf_grid
+            else:
+                colors[face_name] = result
+                # Default confidence of 0.5 for legacy fallback
+                confidences[face_name] = [[0.5] * 3 for _ in range(3)]
 
     # Save raw/debug for visualization
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -1021,7 +1177,12 @@ def detect_from_frames(
     debug_frame = draw_debug_overlay(bgr_frame, faces, face_polygons, colors)
     cv2.imwrite(str(OUTPUT_DIR / "debug.jpg"), debug_frame)
 
-    return colors if colors else None
+    if not colors:
+        return None
+
+    if return_confidence:
+        return colors, confidences
+    return colors
 
 
 def run_pipeline() -> CubeState | None:
@@ -1055,17 +1216,28 @@ def run_pipeline() -> CubeState | None:
     if face_polygons:
         print(f"Using calibrated face polygons: {list(face_polygons.keys())}")
 
-        # Use grid-based detection (works for stickerless cubes)
-        print("Detecting colors using grid sampling...")
+        # Use robust multi-point detection with confidence scoring
+        print("Detecting colors using robust multi-point sampling...")
         colors: dict[str, list[list[str]]] = {}
+        confidences: dict[str, list[list[float]]] = {}
 
         for face_name, polygon in face_polygons.items():
-            grid = detect_face_grid(hsv_frame, polygon, face_name)
-            if grid:
-                colors[face_name] = grid
-                # Count detected (non-'?') stickers
-                detected = sum(1 for row in grid for c in row if c != '?')
-                print(f"  {face_name}: {detected}/9 stickers detected")
+            result = detect_face_grid_with_offsets(
+                hsv_frame, polygon, face_name, return_confidence=True
+            )
+            if result:
+                if isinstance(result, tuple):
+                    grid, conf_grid = result
+                    colors[face_name] = grid
+                    confidences[face_name] = conf_grid
+                else:
+                    colors[face_name] = result
+                    confidences[face_name] = [[0.5] * 3 for _ in range(3)]
+
+                # Count detected (non-'?') stickers and average confidence
+                detected = sum(1 for row in colors[face_name] for c in row if c != '?')
+                avg_conf = sum(sum(row) for row in confidences[face_name]) / 9
+                print(f"  {face_name}: {detected}/9 stickers detected (avg conf: {avg_conf:.2f})")
 
         total = sum(sum(1 for row in g for c in row if c != '?') for g in colors.values())
         print(f"Total: {total} stickers in {len(colors)} faces")
@@ -1077,10 +1249,15 @@ def run_pipeline() -> CubeState | None:
         print("Use the web UI to calibrate face polygons")
         faces = {}
         colors = {}
+        confidences = {}
 
-    # Create cube state
-    confidence = len(colors) / 3.0  # 3 visible faces expected
-    state = CubeState.from_detected(colors, confidence=min(confidence, 1.0))
+    # Create cube state with confidence data
+    overall_confidence = len(colors) / 3.0  # 3 visible faces expected
+    state = CubeState.from_detected(
+        colors,
+        confidence=min(overall_confidence, 1.0),
+        confidences=confidences if confidences else None
+    )
 
     # Save debug overlay
     debug_frame = draw_debug_overlay(bgr_frame, faces, face_polygons, colors)

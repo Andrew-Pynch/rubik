@@ -76,6 +76,7 @@ function connect() {
         reconnectAttempts = 0;
         setConnectionStatus('connected');
         refreshImages();
+        startCameraStatusPolling();
     };
 
     ws.onmessage = (event) => {
@@ -90,6 +91,7 @@ function connect() {
     ws.onclose = () => {
         console.log('WebSocket disconnected');
         setConnectionStatus('disconnected');
+        stopCameraStatusPolling();
         scheduleReconnect();
     };
 
@@ -152,13 +154,19 @@ async function refreshImages() {
     lastUpdateEl.textContent = now.toLocaleTimeString();
 }
 
-function setConnectionStatus(status) {
+function setConnectionStatus(status, cameraStatus = null) {
     statusIndicator.className = 'indicator ' + status;
 
     switch (status) {
         case 'connected':
-            statusText.textContent = 'Connected';
-            connectionState.textContent = 'Connected';
+            if (cameraStatus && !cameraStatus.connected) {
+                statusText.textContent = 'Camera: ' + (cameraStatus.error || 'Disconnected');
+                connectionState.textContent = 'Camera Offline';
+                statusIndicator.className = 'indicator camera-error';
+            } else {
+                statusText.textContent = 'Connected';
+                connectionState.textContent = 'Connected';
+            }
             break;
         case 'disconnected':
             statusText.textContent = 'Disconnected';
@@ -168,6 +176,39 @@ function setConnectionStatus(status) {
             statusText.textContent = 'Connecting...';
             connectionState.textContent = 'Connecting...';
             break;
+    }
+}
+
+// Camera status polling
+let cameraStatusInterval = null;
+
+async function fetchCameraStatus() {
+    try {
+        const response = await fetch('/camera/status');
+        if (response.ok) {
+            const status = await response.json();
+            // Update UI if WebSocket is connected but camera has issues
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                setConnectionStatus('connected', status);
+            }
+            return status;
+        }
+    } catch (error) {
+        console.warn('Failed to fetch camera status:', error);
+    }
+    return null;
+}
+
+function startCameraStatusPolling() {
+    if (cameraStatusInterval) return;
+    cameraStatusInterval = setInterval(fetchCameraStatus, 3000);
+    fetchCameraStatus(); // Initial fetch
+}
+
+function stopCameraStatusPolling() {
+    if (cameraStatusInterval) {
+        clearInterval(cameraStatusInterval);
+        cameraStatusInterval = null;
     }
 }
 
