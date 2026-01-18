@@ -1,6 +1,17 @@
 # PRD-04: Three.js 3D Visualization
 
-**Status:** Not Started
+**Status:** ✅ Complete (T3 + T4)
+
+**Progress Notes (T3):**
+- ✅ Three.js scene with 3x3x3 cube renders
+- ✅ OrbitControls for mouse drag rotation
+- ✅ updateState() applies colors from state.json
+- ✅ WebSocket triggers state refresh
+
+**Progress Notes (T4):**
+- ✅ Fixed face mapping: Renamed "L" → "F" throughout codebase
+- ✅ F (red) and R (blue) now correctly shown as adjacent faces
+- ✅ 3D visualization matches camera corner-view (U/F/R meet at vertex)
 **Dependencies:** PRD-03 complete
 **Estimated effort:** Medium
 

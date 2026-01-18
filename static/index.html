@@ -20,7 +20,9 @@
     <header>
         <h1>Rubik's Cube CV Debugger</h1>
         <div class="header-controls">
+            <button id="stream-btn" class="btn btn-primary">▶ Live Stream</button>
             <button id="calibrate-btn" class="btn">Calibrate</button>
+            <button id="settings-btn" class="btn">⚙ HSV</button>
             <div class="connection-status">
                 <span id="status-indicator" class="indicator disconnected"></span>
                 <span id="status-text">Disconnected</span>
@@ -36,10 +38,10 @@
             <div class="vertex-list">
                 <span class="vertex" data-idx="0">1. White face - BACK LEFT corner</span>
                 <span class="vertex" data-idx="1">2. White face - BACK RIGHT corner</span>
-                <span class="vertex" data-idx="2">3. White/Red edge - LEFT corner</span>
-                <span class="vertex" data-idx="3">4. CENTER - where White/Red/Blue meet</span>
-                <span class="vertex" data-idx="4">5. Red face - BOTTOM LEFT corner</span>
-                <span class="vertex" data-idx="5">6. Red/Blue edge - BOTTOM CENTER</span>
+                <span class="vertex" data-idx="2">3. White/Red (Front) edge - LEFT corner</span>
+                <span class="vertex" data-idx="3">4. CENTER - where White/Front/Right meet</span>
+                <span class="vertex" data-idx="4">5. Front (Red) face - BOTTOM LEFT corner</span>
+                <span class="vertex" data-idx="5">6. Front/Right edge - BOTTOM CENTER</span>
                 <span class="vertex" data-idx="6">7. Blue face - BACK RIGHT corner</span>
                 <span class="vertex" data-idx="7">8. Blue face - BOTTOM RIGHT corner</span>
             </div>
@@ -47,6 +49,39 @@
                 <button id="calibration-reset" class="btn btn-secondary">Reset</button>
                 <button id="calibration-save" class="btn btn-primary" disabled>Save</button>
                 <button id="calibration-cancel" class="btn btn-secondary">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- HSV Settings overlay -->
+    <div id="hsv-overlay" class="hidden">
+        <div class="hsv-content">
+            <h2>HSV Adjustments</h2>
+            <p class="hsv-help">Shift all color detection ranges together</p>
+            <div class="slider-group">
+                <label>
+                    <span class="slider-label">Hue offset</span>
+                    <span class="slider-value" id="hue-value">0</span>
+                </label>
+                <input type="range" id="hue-slider" min="-30" max="30" value="0">
+            </div>
+            <div class="slider-group">
+                <label>
+                    <span class="slider-label">Saturation offset</span>
+                    <span class="slider-value" id="sat-value">0</span>
+                </label>
+                <input type="range" id="sat-slider" min="-50" max="50" value="0">
+            </div>
+            <div class="slider-group">
+                <label>
+                    <span class="slider-label">Value/Brightness offset</span>
+                    <span class="slider-value" id="val-value">0</span>
+                </label>
+                <input type="range" id="val-slider" min="-50" max="50" value="0">
+            </div>
+            <div class="hsv-actions">
+                <button id="hsv-reset" class="btn btn-secondary">Reset to 0</button>
+                <button id="hsv-close" class="btn btn-primary">Close</button>
             </div>
         </div>
     </div>
@@ -61,8 +96,8 @@
         </section>
 
         <section class="panel">
-            <h2>Debug Frame</h2>
-            <div class="image-container">
+            <h2>Debug Frame <span id="stream-status" class="stream-badge hidden">LIVE</span></h2>
+            <div class="image-container" id="debug-container">
                 <img id="debug-img" src="/output/debug.jpg" alt="Debug overlay">
             </div>
         </section>
@@ -76,6 +111,24 @@
     </main>
 
     <footer>
+        <div class="capture-section">
+            <button id="capture-btn" class="btn btn-primary btn-large">📷 Capture</button>
+            <button id="reset-btn" class="btn btn-secondary">Reset</button>
+        </div>
+        <div class="progress-section">
+            <div class="face-icons">
+                <span class="face-icon" data-face="U" title="Up (White)">?</span>
+                <span class="face-icon" data-face="D" title="Down (Yellow)">?</span>
+                <span class="face-icon" data-face="F" title="Front (Red)">?</span>
+                <span class="face-icon" data-face="B" title="Back (Orange)">?</span>
+                <span class="face-icon" data-face="L" title="Left (Green)">?</span>
+                <span class="face-icon" data-face="R" title="Right (Blue)">?</span>
+            </div>
+            <span class="progress-text" id="progress-text">0/6 faces</span>
+        </div>
+        <div class="hint-section">
+            <span id="rotation-hint">Place cube and click Capture</span>
+        </div>
         <div class="status-bar">
             <span>Status: <strong id="connection-state">Connecting...</strong></span>
             <span>Last update: <strong id="last-update">--:--:--</strong></span>

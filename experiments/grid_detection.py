@@ -145,7 +145,7 @@ def main():
             print(f"  {row}")
 
     # Count accuracy for solved cube
-    expected = {'U': 'W', 'L': 'R', 'R': 'B'}
+    expected = {'U': 'W', 'F': 'R', 'R': 'B'}
     print("\n" + "=" * 40)
     print("Accuracy check (assuming solved cube):")
     for face, expected_letter in expected.items():

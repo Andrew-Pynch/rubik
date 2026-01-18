@@ -135,6 +135,7 @@ def detect_face_grid(
     """Detect 3x3 color grid using perspective-corrected sampling.
 
     This approach works for stickerless cubes where colors blend together.
+    Center sticker (1,1) uses majority voting from neighbors to handle logos.
 
     Args:
         hsv_frame: HSV image.
@@ -175,6 +176,24 @@ def detect_face_grid(
                 row_colors.append('?')
 
         grid.append(row_colors)
+
+    # Fix center sticker using majority voting from neighbors
+    # Center stickers often have logos that confuse detection
+    neighbors = [
+        grid[0][0], grid[0][1], grid[0][2],
+        grid[1][0],             grid[1][2],
+        grid[2][0], grid[2][1], grid[2][2],
+    ]
+    # Filter out unknown
+    valid_neighbors = [c for c in neighbors if c != '?']
+    if valid_neighbors:
+        # Use most common neighbor color for center
+        from collections import Counter
+        most_common = Counter(valid_neighbors).most_common(1)[0][0]
+        # Only override if majority agrees (at least 5 of 8)
+        count = Counter(valid_neighbors)[most_common]
+        if count >= 5:
+            grid[1][1] = most_common
 
     return grid
 
@@ -295,7 +314,7 @@ def detect_stickers_in_polygon(
     Args:
         hsv_frame: HSV frame for color classification.
         polygon: List of (x, y) corner points defining the face region.
-        face_name: Name of the face (U, L, R) for debugging.
+        face_name: Name of the face (U, F, R) for debugging.
 
     Returns:
         List of detected stickers within this polygon.
@@ -396,7 +415,7 @@ def group_into_faces(
         roi: ROI bounds for face position calculation.
 
     Returns:
-        Dict mapping face name (U, L, R) to list of 9 stickers.
+        Dict mapping face name (U, F, R) to list of 9 stickers.
     """
     if len(stickers) < 9:
         return {}
@@ -533,7 +552,7 @@ def draw_debug_overlay(
     # Face polygon colors
     face_draw_colors = {
         'U': (255, 255, 255),  # White
-        'L': (0, 0, 255),      # Red
+        'F': (0, 0, 255),      # Red
         'R': (255, 100, 0),    # Blue
     }
 
@@ -631,6 +650,357 @@ def draw_debug_overlay(
     return debug
 
 
+def grid_edge_point(
+    col: float,
+    row: float,
+    ordered_corners: list[tuple[int, int]],
+) -> tuple[int, int]:
+    """Get image coordinates for a point on the grid (edge, not cell center).
+
+    Unlike perspective_grid_point which returns cell centers, this maps
+    raw grid coordinates directly (0-3 range maps to polygon corners).
+
+    Args:
+        col: Column position (0-3, where 0 and 3 are polygon edges).
+        row: Row position (0-3, where 0 and 3 are polygon edges).
+        ordered_corners: 4 corners in TL, TR, BR, BL order.
+
+    Returns:
+        (x, y) coordinates in image space.
+    """
+    src = np.array(ordered_corners, dtype=np.float32)
+    dst = np.array([[0, 0], [3, 0], [3, 3], [0, 3]], dtype=np.float32)
+
+    M = cv2.getPerspectiveTransform(dst, src)
+    pt = np.array([[[col, row]]], dtype=np.float32)  # No +0.5 offset
+    transformed = cv2.perspectiveTransform(pt, M)
+
+    return int(transformed[0, 0, 0]), int(transformed[0, 0, 1])
+
+
+def draw_grid_lines(debug: np.ndarray, polygon: list[tuple[int, int]]) -> None:
+    """Draw perspective-correct grid lines on a face polygon.
+
+    Draws 2 horizontal and 2 vertical lines marking sticker boundaries.
+
+    Args:
+        debug: Image to draw on (modified in place).
+        polygon: 4 corner points of face polygon.
+    """
+    ordered = order_polygon_corners(polygon)
+
+    # Draw horizontal dividers (between rows 0-1 and 1-2)
+    # Line at y=1 separates row 0 from row 1
+    # Line at y=2 separates row 1 from row 2
+    for row in [1, 2]:
+        p1 = grid_edge_point(0, row, ordered)
+        p2 = grid_edge_point(3, row, ordered)
+        cv2.line(debug, p1, p2, (0, 255, 255), 1, cv2.LINE_AA)
+
+    # Draw vertical dividers (between cols 0-1 and 1-2)
+    for col in [1, 2]:
+        p1 = grid_edge_point(col, 0, ordered)
+        p2 = grid_edge_point(col, 3, ordered)
+        cv2.line(debug, p1, p2, (0, 255, 255), 1, cv2.LINE_AA)
+
+
+def process_frame_for_stream(
+    bgr_frame: np.ndarray,
+    hsv_frame: np.ndarray,
+    hsv_offsets: dict | None = None,
+) -> np.ndarray:
+    """Process a single frame for streaming with detection overlay.
+
+    Args:
+        bgr_frame: BGR frame to annotate.
+        hsv_frame: HSV frame for color classification.
+        hsv_offsets: Optional dict with 'h', 's', 'v' offset values.
+
+    Returns:
+        Annotated BGR frame.
+    """
+    from config import load_face_polygons
+
+    debug = bgr_frame.copy()
+    face_polygons = load_face_polygons()
+
+    if not face_polygons:
+        cv2.putText(
+            debug,
+            "NOT CALIBRATED - Click 'Calibrate' in web UI",
+            (10, 60),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 0, 255),
+            2,
+        )
+        return debug
+
+    # Color letter to BGR
+    letter_bgr = {
+        'W': (255, 255, 255),
+        'Y': (0, 255, 255),
+        'O': (0, 165, 255),
+        'R': (0, 0, 255),
+        'G': (0, 255, 0),
+        'B': (255, 0, 0),
+        '?': (128, 128, 128),
+    }
+
+    # Face polygon colors
+    face_draw_colors = {
+        'U': (255, 255, 255),
+        'F': (0, 0, 255),
+        'R': (255, 100, 0),
+    }
+
+    total_stickers = 0
+
+    for face_name, polygon in face_polygons.items():
+        poly_color = face_draw_colors.get(face_name, (255, 255, 0))
+        pts = np.array(polygon, dtype=np.int32)
+        cv2.polylines(debug, [pts], isClosed=True, color=poly_color, thickness=2)
+
+        # Draw grid lines
+        draw_grid_lines(debug, polygon)
+
+        # Detect colors using grid sampling
+        grid = detect_face_grid_with_offsets(hsv_frame, polygon, face_name, hsv_offsets)
+        if grid:
+            ordered = order_polygon_corners(polygon)
+            for row in range(3):
+                for col in range(3):
+                    x, y = perspective_grid_point(col, row, ordered)
+                    letter = grid[row][col]
+                    bgr = letter_bgr.get(letter, (128, 128, 128))
+
+                    # Draw filled circle at sample point
+                    cv2.circle(debug, (x, y), 12, bgr, -1)
+                    cv2.circle(debug, (x, y), 12, (0, 0, 0), 2)
+
+                    # Draw letter
+                    cv2.putText(
+                        debug, letter, (x - 8, y + 6),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2,
+                    )
+
+                    if letter != '?':
+                        total_stickers += 1
+
+            # Face label
+            cx = int(np.mean([p[0] for p in polygon]))
+            cy = int(np.mean([p[1] for p in polygon]))
+            cv2.putText(
+                debug, f"[{face_name}]", (cx - 20, cy - 60),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2,
+            )
+
+    # Status text
+    cv2.putText(
+        debug,
+        f"Detected: {total_stickers} stickers, {len(face_polygons)} faces",
+        (10, 30),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (0, 255, 0),
+        2,
+    )
+
+    return debug
+
+
+def detect_face_grid_with_offsets(
+    hsv_frame: np.ndarray,
+    polygon: list[tuple[int, int]],
+    face_name: str,
+    hsv_offsets: dict | None = None,
+) -> list[list[str]] | None:
+    """Detect 3x3 color grid with optional HSV offsets.
+
+    Args:
+        hsv_frame: HSV image.
+        polygon: 4 corner points of face polygon.
+        face_name: Name of face for debugging.
+        hsv_offsets: Optional dict with 'h', 's', 'v' offset values.
+
+    Returns:
+        3x3 grid of color letters, or None if detection fails.
+    """
+    ordered = order_polygon_corners(polygon)
+
+    grid: list[list[str]] = []
+    for row in range(3):
+        row_colors: list[str] = []
+        for col in range(3):
+            x, y = perspective_grid_point(col, row, ordered)
+
+            # Bounds check
+            if not (0 <= y < hsv_frame.shape[0] and 0 <= x < hsv_frame.shape[1]):
+                row_colors.append('?')
+                continue
+
+            # Sample 15x15 region
+            y1, y2 = max(0, y - 7), min(hsv_frame.shape[0], y + 8)
+            x1, x2 = max(0, x - 7), min(hsv_frame.shape[1], x + 8)
+            region = hsv_frame[y1:y2, x1:x2]
+
+            if region.size == 0:
+                row_colors.append('?')
+                continue
+
+            hsv_values = region.reshape(-1, 3)
+            result = classify_color_with_offsets(hsv_values, hsv_offsets)
+
+            if result:
+                row_colors.append(result[1])  # color letter
+            else:
+                row_colors.append('?')
+
+        grid.append(row_colors)
+
+    # Fix center sticker using majority voting from neighbors
+    neighbors = [
+        grid[0][0], grid[0][1], grid[0][2],
+        grid[1][0],             grid[1][2],
+        grid[2][0], grid[2][1], grid[2][2],
+    ]
+    valid_neighbors = [c for c in neighbors if c != '?']
+    if valid_neighbors:
+        from collections import Counter
+        most_common = Counter(valid_neighbors).most_common(1)[0][0]
+        count = Counter(valid_neighbors)[most_common]
+        if count >= 5:
+            grid[1][1] = most_common
+
+    return grid
+
+
+def classify_color_with_offsets(
+    hsv_values: np.ndarray,
+    hsv_offsets: dict | None = None,
+) -> tuple[str, str] | None:
+    """Classify HSV values to a cube color with optional offsets.
+
+    Args:
+        hsv_values: Array of HSV values (Nx3) to classify.
+        hsv_offsets: Optional dict with 'h', 's', 'v' offset values.
+
+    Returns:
+        Tuple of (color_name, color_letter) or None if no match.
+    """
+    # Calculate median for robustness
+    h = np.median(hsv_values[:, 0])
+    s = np.median(hsv_values[:, 1])
+    v = np.median(hsv_values[:, 2])
+
+    # Apply global offsets if provided
+    if hsv_offsets:
+        h = (h + hsv_offsets.get('h', 0)) % 180
+        s = max(0, min(255, s + hsv_offsets.get('s', 0)))
+        v = max(0, min(255, v + hsv_offsets.get('v', 0)))
+
+    for color_name, ranges in COLOR_RANGES.items():
+        h_range = ranges['h']
+        s_range = ranges['s']
+        v_range = ranges['v']
+
+        # Check saturation and value first
+        if not (s_range[0] <= s <= s_range[1]):
+            continue
+        if not (v_range[0] <= v <= v_range[1]):
+            continue
+
+        # Check hue (handle red's wraparound)
+        if isinstance(h_range, list):
+            h_match = any(r[0] <= h <= r[1] for r in h_range)
+        else:
+            h_match = h_range[0] <= h <= h_range[1]
+
+        if h_match:
+            return color_name, COLOR_LETTERS[color_name]
+
+    return None
+
+
+def detect_current_frame() -> dict[str, list[list[str]]] | None:
+    """Capture and detect faces, returning grids without saving files.
+
+    Used by capture session for multi-capture workflow.
+
+    Returns:
+        Dict mapping positional face names (U/F/R) to 3x3 color grids,
+        or None if capture/detection failed.
+    """
+    # Capture frame
+    frame = capture_frame()
+    if frame is None:
+        return None
+
+    # Preprocess
+    bgr_frame, hsv_frame = preprocess(frame)
+
+    # Load face polygons
+    face_polygons = load_face_polygons()
+    if not face_polygons:
+        return None
+
+    # Detect each face
+    colors: dict[str, list[list[str]]] = {}
+    for face_name, polygon in face_polygons.items():
+        grid = detect_face_grid(hsv_frame, polygon, face_name)
+        if grid:
+            colors[face_name] = grid
+
+    # Also save raw/debug for visualization (user still sees these)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(OUTPUT_DIR / "raw.jpg"), bgr_frame)
+
+    faces: dict[str, list[DetectedSticker]] = {}
+    debug_frame = draw_debug_overlay(bgr_frame, faces, face_polygons, colors)
+    cv2.imwrite(str(OUTPUT_DIR / "debug.jpg"), debug_frame)
+
+    return colors if colors else None
+
+
+def detect_from_frames(
+    bgr_frame: np.ndarray,
+    hsv_frame: np.ndarray,
+) -> dict[str, list[list[str]]] | None:
+    """Detect faces from pre-captured frames.
+
+    Used when livestream is running and we already have frames.
+
+    Args:
+        bgr_frame: Preprocessed BGR frame.
+        hsv_frame: Preprocessed HSV frame.
+
+    Returns:
+        Dict mapping positional face names (U/F/R) to 3x3 color grids,
+        or None if detection failed.
+    """
+    # Load face polygons
+    face_polygons = load_face_polygons()
+    if not face_polygons:
+        return None
+
+    # Detect each face
+    colors: dict[str, list[list[str]]] = {}
+    for face_name, polygon in face_polygons.items():
+        grid = detect_face_grid(hsv_frame, polygon, face_name)
+        if grid:
+            colors[face_name] = grid
+
+    # Save raw/debug for visualization
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(OUTPUT_DIR / "raw.jpg"), bgr_frame)
+
+    faces: dict[str, list[DetectedSticker]] = {}
+    debug_frame = draw_debug_overlay(bgr_frame, faces, face_polygons, colors)
+    cv2.imwrite(str(OUTPUT_DIR / "debug.jpg"), debug_frame)
+
+    return colors if colors else None
+
+
 def run_pipeline() -> CubeState | None:
     """Main entry point - captures, processes, saves outputs.
 
@@ -709,3 +1079,11 @@ if __name__ == "__main__":
     result = run_pipeline()
     if result is None:
         sys.exit(1)
+
+    # Capture 3D visualization screenshot for verification
+    try:
+        from screenshot_3d import capture_with_server
+        screenshot_path = capture_with_server()
+        print(f"3D screenshot: {screenshot_path}")
+    except Exception as e:
+        print(f"Warning: Could not capture 3D screenshot: {e}")

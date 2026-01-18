@@ -2,79 +2,126 @@
 
 Computer vision pipeline for detecting Rubik's cube state from camera feed, with web-based debugger and 3D visualization.
 
+## Quick Start
+
+```bash
+./run.sh                    # Start server at localhost:8000 (auto-reload enabled)
+```
+
+Open http://localhost:8000 to see:
+- Live MJPEG stream with detection overlay
+- HSV offset sliders for color tuning
+- Interactive 3D cube visualization
+
 ## Project Structure
 
 ```
 rubik/
-├── config.py           # Camera calibration, color ranges, paths
-├── capture.py          # Capture single frame from IP camera
-├── pipeline.py         # CV processing pipeline
-├── cube_model.py       # CubeState class for cube representation
-├── output/             # Generated outputs (gitignored)
-│   ├── raw.jpg         # Original captured frame
-│   ├── debug.jpg       # Frame with CV overlays
-│   └── state.json      # Detected cube state
-├── static/             # Web UI assets (future)
-└── todos/              # Project phase documents
+├── config.py              # Camera calibration, HSV color ranges, paths
+├── pipeline.py            # Main CV processing (capture → detect → output)
+├── detect.py              # Color detection and classification
+├── preprocess.py          # Image preprocessing (rotation, filtering)
+├── cube_model.py          # CubeState class for cube representation
+├── server.py              # FastAPI server with WebSocket + MJPEG streaming
+├── capture.py             # Standalone frame capture utility
+├── run.sh                 # Server startup script
+│
+├── static/                # Web UI assets
+│   ├── index.html         # Main page layout
+│   ├── app.js             # WebSocket client, stream toggle, controls
+│   ├── cube3d.js          # Three.js 3D cube visualization
+│   └── style.css          # Dark theme styling
+│
+├── output/                # Generated outputs (gitignored)
+│   ├── raw.jpg            # Captured frame (rotated)
+│   ├── debug.jpg          # Frame with CV overlays and grid lines
+│   ├── calibration.json   # Face polygon vertices from calibration
+│   └── state.json         # Detected cube state
+│
+├── experiments/           # Debugging and testing scripts
+│   ├── grid_detection.py
+│   ├── debug_detection.py
+│   └── sample_hsv.py
+│
+└── todos/                 # Project phase documents and handoffs
+    ├── PRD-01-CONFIG.md   # ✅ Complete - Foundation
+    ├── PRD-02-PIPELINE.md # ✅ Complete - CV Pipeline
+    ├── PRD-03-WEBDEBUGGER.md # ✅ Complete - Web UI
+    ├── PRD-04-CUBE3D.md   # ✅ Complete - 3D Visualization
+    ├── PRD-05-INTEGRATION.md # 🔄 In Progress - Multi-capture
+    └── T*-HANDOFF.md      # Session handoff documents
 ```
 
 ## How to Run
 
 ```bash
-# Capture single frame from camera
-python capture.py
+# Start web server with auto-reload
+./run.sh
 
-# Run full CV pipeline (capture + detect + output)
-python pipeline.py
+# Or manually:
+.venv/bin/uvicorn server:app --host 0.0.0.0 --port 8000 --reload
 
-# Future: Start web debugger
-python server.py
+# Run pipeline once (saves to output/)
+.venv/bin/python pipeline.py
+
+# Capture single frame only
+.venv/bin/python capture.py
 ```
 
-## Conventions
+## Web UI Features
+
+- **Live Stream**: Toggle MJPEG stream at `/stream` endpoint
+- **HSV Sliders**: Adjust Hue/Saturation/Value offsets for color detection
+- **3D Cube**: Interactive Three.js visualization with OrbitControls
+- **Auto-refresh**: WebSocket pushes updates when output files change
+
+## Camera Setup
+
+- **Device**: iPhone with IP Camera Lite app
+- **URL**: `http://192.168.1.237:8081/video` (MJPEG stream)
+- **Mount**: 3D printed holder, 150mm from cube center
+- **Orientation**: 53.5° pitch (downward), -21.5° roll (rightward)
+- **Rotation**: Image rotated 90° clockwise to correct orientation
+
+## Cube Face Mapping
+
+Camera sees 3 faces meeting at a corner vertex:
+
+```
+        [U - White]
+           /\
+          /  \
+    [F-Red]  [R-Blue]
+         \  /
+          \/
+```
+
+| Face | Color | Position in Camera View |
+|------|-------|------------------------|
+| U | White | Top |
+| F | Red | Bottom-left |
+| R | Blue | Bottom-right |
+| D, L, B | — | Not visible (need cube rotation) |
+
+**Note**: Face labels use standard Rubik's notation where F/R are adjacent faces (share an edge), not opposite.
+
+## Key Libraries
+
+- `opencv-python` - Image capture and CV processing
+- `numpy` - Array operations
+- `fastapi` + `uvicorn` - Web server with WebSocket support
+- `watchdog` - File watching for live updates
+- `kociemba` - Rubik's cube solver algorithm (for future integration)
+
+## Coding Conventions
 
 - Python 3.11+
 - Type hints for function signatures
 - Docstrings for public functions
-- OpenCV for image processing
 - HSV color space for color detection
+- Experiments in `experiments/` folder, promote useful code to root
 
-## Camera Setup
+## Known Issues (Current Sprint)
 
-- iPhone in 3D printed mount
-- URL: http://192.168.1.237:8081/video (MJPEG stream)
-- Distance: 150mm from cube center
-- Pitch: 53.5° downward
-- Roll: -21.5° rightward
-- Image requires 90° clockwise rotation
-
-## Cube Orientation
-
-When viewing through camera (after rotation):
-- **U (Up)**: White face (top)
-- **L (Left)**: Red face
-- **R (Right)**: Blue face
-- **D, F, B**: Not visible from this angle
-
-## Key Libraries
-
-- `opencv-python`: Image capture and CV processing
-- `numpy`: Array operations
-- `kociemba`: Rubik's cube solver algorithm
-- `fastapi` + `uvicorn`: Web server (future)
-- `watchdog`: File watching for live updates (future)
-- ultrathink
-● The raw.jpg is already rotated (1920 height x 1080 width). My debug script was
-  double-rotating! The calibration should work - let me fix the sampling:
-
-● Bash(.venv/bin/python << 'EOF'
-      import cv2…)
-  ⎿  raw.jpg shape: (1920, 1080, 3) (H x W)
-
-     Sampling HSV at face polygon centers (from calibration):
-     … +5 lines (ctrl+o to expand)
-
-
-instead of doing EOF scripts in cli like this, can you just have a /experiments folder with simple little python scripts that you can just run? I dont want to have to keep waiting to approve everytime you need to ask to write to cli like this instead of writing code and running it in auto accept edits.
-
-when code is useful enough bring it into the main root of the repo and integrate in appropriate place
+1. **3D mapping mismatch**: Grid indexing in cube3d.js doesn't match pipeline.py sticker ordering
+2. **Inconsistent detection**: Need multi-point sampling per sticker cell instead of single-point

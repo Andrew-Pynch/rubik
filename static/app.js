@@ -18,6 +18,26 @@ const lastUpdateEl = document.getElementById('last-update');
 const rawImg = document.getElementById('raw-img');
 const debugImg = document.getElementById('debug-img');
 
+// Capture workflow elements
+const captureBtn = document.getElementById('capture-btn');
+const resetBtn = document.getElementById('reset-btn');
+const progressText = document.getElementById('progress-text');
+const rotationHint = document.getElementById('rotation-hint');
+const faceIcons = document.querySelectorAll('.face-icon');
+
+// Capture state
+let isCapturing = false;
+
+// Face color mapping for icons
+const FACE_COLORS = {
+    'U': '#ffffff', // White
+    'D': '#ffff00', // Yellow
+    'F': '#ff0000', // Red
+    'B': '#ff8c00', // Orange
+    'L': '#00ff00', // Green
+    'R': '#0000ff', // Blue
+};
+
 // Calibration elements
 const calibrateBtn = document.getElementById('calibrate-btn');
 const calibrationOverlay = document.getElementById('calibration-overlay');
@@ -34,9 +54,9 @@ let calibrationVertices = []; // Array of [x, y] in image coordinates
 const VERTEX_NAMES = [
     'u_top_left',
     'u_top_right',
-    'l_top_left',
+    'f_top_left',
     'center',
-    'l_bottom_left',
+    'f_bottom_left',
     'bottom_center',
     'r_top_right',
     'r_bottom_right'
@@ -83,6 +103,8 @@ function handleMessage(data) {
     switch (data.type) {
         case 'connected':
             console.log('Server acknowledged connection');
+            // Fetch initial session state
+            fetchSessionState();
             break;
         case 'update':
             refreshImages();
@@ -299,10 +321,10 @@ function drawCalibration() {
             drawPolygon(ctx, faces.U, scaleX, scaleY);
         }
 
-        // Draw L face (vertices 2, 3, 5, 4)
-        if (faces.L) {
+        // Draw F face (vertices 2, 3, 5, 4)
+        if (faces.F) {
             ctx.strokeStyle = 'rgba(255, 0, 0, 0.8)';
-            drawPolygon(ctx, faces.L, scaleX, scaleY);
+            drawPolygon(ctx, faces.F, scaleX, scaleY);
         }
 
         // Draw R face (vertices 3, 6, 7, 5)
@@ -334,9 +356,9 @@ function computeFacePolygons() {
         faces.U = [v[0], v[1], v[3], v[2]];
     }
 
-    // L face: vertices 2 (l top-left), 3 (center), 5 (bottom-center), 4 (l bottom-left)
+    // F face: vertices 2 (f top-left), 3 (center), 5 (bottom-center), 4 (f bottom-left)
     if (v.length >= 6) {
-        faces.L = [v[2], v[3], v[5], v[4]];
+        faces.F = [v[2], v[3], v[5], v[4]];
     }
 
     // R face: vertices 3 (center), 6 (r top-right), 7 (r bottom-right), 5 (bottom-center)
@@ -432,6 +454,148 @@ window.addEventListener('resize', () => {
 });
 
 // ============================================
+// Capture Workflow Functions
+// ============================================
+
+async function fetchSessionState() {
+    try {
+        const response = await fetch('/session');
+        if (response.ok) {
+            const session = await response.json();
+            updateProgressUI(session);
+        }
+    } catch (error) {
+        console.warn('Failed to fetch session state:', error);
+    }
+}
+
+function updateProgressUI(result) {
+    // Update progress text
+    const count = result.progress?.count ?? 0;
+    progressText.textContent = `${count}/6 faces`;
+
+    // Update rotation hint
+    if (result.hint) {
+        rotationHint.textContent = result.hint;
+    }
+
+    // Update face icons
+    const captured = result.captured || [];
+    faceIcons.forEach(icon => {
+        const face = icon.dataset.face;
+        if (captured.includes(face)) {
+            icon.textContent = face;
+            icon.style.backgroundColor = FACE_COLORS[face];
+            icon.style.color = (face === 'U' || face === 'D' || face === 'L') ? '#000' : '#fff';
+            icon.classList.add('captured');
+        } else {
+            icon.textContent = '?';
+            icon.style.backgroundColor = '#404040';
+            icon.style.color = '#888';
+            icon.classList.remove('captured');
+        }
+    });
+
+    // Check completion
+    if (result.is_complete) {
+        progressText.style.color = '#4caf50';
+        progressText.style.fontWeight = 'bold';
+    } else {
+        progressText.style.color = '';
+        progressText.style.fontWeight = '';
+    }
+}
+
+async function triggerCapture() {
+    if (isCapturing) return;
+
+    isCapturing = true;
+    captureBtn.disabled = true;
+    captureBtn.textContent = '⏳ Capturing...';
+
+    try {
+        const response = await fetch('/capture', { method: 'POST' });
+        const result = await response.json();
+
+        updateProgressUI(result);
+
+        if (!result.success) {
+            console.error('Capture failed:', result.error);
+            showToast('Capture failed: ' + (result.error || 'Unknown error'), 'error');
+        } else if (result.inconsistencies && result.inconsistencies.length > 0) {
+            console.warn('Capture inconsistencies:', result.inconsistencies);
+            showToast(`Warning: ${result.inconsistencies.length} sticker conflicts detected`, 'warning');
+        } else if (result.new_faces && result.new_faces.length > 0) {
+            showToast(`Captured faces: ${result.new_faces.join(', ')}`, 'success');
+        } else {
+            showToast('Same faces detected - rotate cube to show new faces', 'info');
+        }
+
+        if (result.is_complete) {
+            showToast('🎉 All 6 faces captured!', 'success');
+        }
+
+    } catch (error) {
+        console.error('Capture error:', error);
+        showToast('Error: ' + error.message, 'error');
+    } finally {
+        isCapturing = false;
+        captureBtn.disabled = false;
+        captureBtn.textContent = '📷 Capture';
+    }
+}
+
+async function resetSession() {
+    try {
+        const response = await fetch('/reset', { method: 'POST' });
+        const result = await response.json();
+
+        updateProgressUI(result);
+        refreshImages();
+        showToast('Session reset', 'info');
+
+    } catch (error) {
+        console.error('Reset error:', error);
+        showToast('Reset failed: ' + error.message, 'error');
+    }
+}
+
+function showToast(message, type = 'info') {
+    // Remove existing toasts
+    const existingToast = document.querySelector('.toast');
+    if (existingToast) {
+        existingToast.remove();
+    }
+
+    // Create toast element
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.textContent = message;
+
+    document.body.appendChild(toast);
+
+    // Fade in
+    requestAnimationFrame(() => {
+        toast.classList.add('visible');
+    });
+
+    // Auto-remove after 3 seconds
+    setTimeout(() => {
+        toast.classList.remove('visible');
+        setTimeout(() => toast.remove(), 300);
+    }, 3000);
+}
+
+// Capture button event listeners
+if (captureBtn) {
+    captureBtn.addEventListener('click', triggerCapture);
+}
+
+if (resetBtn) {
+    resetBtn.addEventListener('click', resetSession);
+}
+
+// ============================================
 // 3D Cube Initialization
 // ============================================
 
@@ -453,3 +617,164 @@ setTimeout(() => {
         }
     }
 }, 100);
+
+
+// ============================================
+// Live Stream Toggle
+// ============================================
+
+const streamBtn = document.getElementById('stream-btn');
+const streamStatus = document.getElementById('stream-status');
+let isStreaming = false;
+const STATIC_DEBUG_SRC = '/output/debug.jpg';
+const STREAM_SRC = '/stream';
+
+function toggleStream() {
+    isStreaming = !isStreaming;
+
+    if (isStreaming) {
+        // Switch to live stream
+        debugImg.src = STREAM_SRC;
+        streamBtn.textContent = '⏹ Stop Stream';
+        streamBtn.classList.add('streaming');
+        streamStatus.classList.remove('hidden');
+        console.log('Started live stream');
+    } else {
+        // Switch back to static image
+        debugImg.src = STATIC_DEBUG_SRC + `?t=${Date.now()}`;
+        streamBtn.textContent = '▶ Live Stream';
+        streamBtn.classList.remove('streaming');
+        streamStatus.classList.add('hidden');
+        console.log('Stopped live stream');
+    }
+}
+
+if (streamBtn) {
+    streamBtn.addEventListener('click', toggleStream);
+}
+
+// Don't auto-refresh debug image when streaming
+const originalRefreshImages = refreshImages;
+refreshImages = async function() {
+    const timestamp = Date.now();
+
+    // Refresh raw image
+    rawImg.src = `/output/raw.jpg?t=${timestamp}`;
+
+    // Only refresh debug image if not streaming
+    if (!isStreaming) {
+        debugImg.src = `/output/debug.jpg?t=${timestamp}`;
+    }
+
+    // Fetch and update 3D cube state
+    const state = await fetchCubeState();
+    if (state) {
+        updateCubeState(state);
+    }
+
+    // Update last update time
+    const now = new Date();
+    lastUpdateEl.textContent = now.toLocaleTimeString();
+};
+
+
+// ============================================
+// HSV Settings Panel
+// ============================================
+
+const settingsBtn = document.getElementById('settings-btn');
+const hsvOverlay = document.getElementById('hsv-overlay');
+const hueSlider = document.getElementById('hue-slider');
+const satSlider = document.getElementById('sat-slider');
+const valSlider = document.getElementById('val-slider');
+const hueValue = document.getElementById('hue-value');
+const satValue = document.getElementById('sat-value');
+const valValue = document.getElementById('val-value');
+const hsvReset = document.getElementById('hsv-reset');
+const hsvClose = document.getElementById('hsv-close');
+
+let hsvVisible = false;
+
+function toggleHsvPanel() {
+    hsvVisible = !hsvVisible;
+    if (hsvVisible) {
+        hsvOverlay.classList.remove('hidden');
+        // Fetch current settings
+        fetchHsvSettings();
+    } else {
+        hsvOverlay.classList.add('hidden');
+    }
+}
+
+async function fetchHsvSettings() {
+    try {
+        const response = await fetch('/settings/hsv');
+        if (response.ok) {
+            const settings = await response.json();
+            hueSlider.value = settings.h || 0;
+            satSlider.value = settings.s || 0;
+            valSlider.value = settings.v || 0;
+            updateSliderValues();
+        }
+    } catch (error) {
+        console.warn('Failed to fetch HSV settings:', error);
+    }
+}
+
+async function updateHsvSettings() {
+    const data = {
+        h: parseInt(hueSlider.value, 10),
+        s: parseInt(satSlider.value, 10),
+        v: parseInt(valSlider.value, 10),
+    };
+
+    try {
+        await fetch('/settings/hsv', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+    } catch (error) {
+        console.warn('Failed to update HSV settings:', error);
+    }
+}
+
+function updateSliderValues() {
+    hueValue.textContent = hueSlider.value;
+    satValue.textContent = satSlider.value;
+    valValue.textContent = valSlider.value;
+}
+
+function resetHsvSliders() {
+    hueSlider.value = 0;
+    satSlider.value = 0;
+    valSlider.value = 0;
+    updateSliderValues();
+    updateHsvSettings();
+}
+
+// HSV event listeners
+if (settingsBtn) {
+    settingsBtn.addEventListener('click', toggleHsvPanel);
+}
+
+if (hsvClose) {
+    hsvClose.addEventListener('click', () => {
+        hsvOverlay.classList.add('hidden');
+        hsvVisible = false;
+    });
+}
+
+if (hsvReset) {
+    hsvReset.addEventListener('click', resetHsvSliders);
+}
+
+// Update values and send to server on slider change
+[hueSlider, satSlider, valSlider].forEach(slider => {
+    if (slider) {
+        slider.addEventListener('input', () => {
+            updateSliderValues();
+            updateHsvSettings();
+        });
+    }
+});

@@ -15,8 +15,11 @@ body {
     flex-direction: column;
 }
 
-/* Header */
+/* Header - sticky navbar */
 header {
+    position: sticky;
+    top: 0;
+    z-index: 100;
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -71,6 +74,7 @@ main.panel-container {
     grid-template-columns: repeat(3, 1fr);
     gap: 1rem;
     padding: 1rem;
+    padding-bottom: 200px;  /* Space for sticky footer */
     overflow-y: auto;
     min-height: 0;  /* Allow shrinking in flex */
 }
@@ -123,11 +127,16 @@ main.panel-container {
     display: block;
 }
 
-/* Footer status bar */
+/* Footer status bar - sticky to bottom */
 footer {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
     background-color: #2d2d2d;
     border-top: 1px solid #3d3d3d;
     padding: 0.75rem 2rem;
+    z-index: 100;
 }
 
 .status-bar {
@@ -319,4 +328,254 @@ footer {
     main.panel-container {
         grid-template-columns: 1fr;
     }
+}
+
+/* ============================================
+   Capture Workflow Styles
+   ============================================ */
+
+/* Footer layout for capture workflow */
+footer {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    padding: 1rem 2rem;
+}
+
+.capture-section {
+    display: flex;
+    gap: 0.75rem;
+    align-items: center;
+}
+
+.btn-large {
+    padding: 0.75rem 1.5rem;
+    font-size: 1rem;
+}
+
+.progress-section {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.face-icons {
+    display: flex;
+    gap: 0.25rem;
+}
+
+.face-icon {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: bold;
+    background-color: #404040;
+    color: #888;
+    transition: all 0.2s ease;
+}
+
+.face-icon.captured {
+    box-shadow: 0 0 4px rgba(255, 255, 255, 0.3);
+}
+
+.progress-text {
+    font-size: 0.9rem;
+    color: #e0e0e0;
+    font-weight: 500;
+}
+
+.hint-section {
+    padding: 0.5rem 0.75rem;
+    background-color: #1a1a1a;
+    border-radius: 4px;
+    font-size: 0.85rem;
+    color: #ffc107;
+}
+
+#rotation-hint {
+    display: block;
+}
+
+/* Toast notifications */
+.toast {
+    position: fixed;
+    bottom: 220px;  /* Above the sticky footer */
+    left: 50%;
+    transform: translateX(-50%) translateY(20px);
+    padding: 0.75rem 1.5rem;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    opacity: 0;
+    transition: all 0.3s ease;
+    z-index: 2000;
+    max-width: 400px;
+    text-align: center;
+}
+
+.toast.visible {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+}
+
+.toast-success {
+    background-color: #4caf50;
+    color: white;
+}
+
+.toast-error {
+    background-color: #f44336;
+    color: white;
+}
+
+.toast-warning {
+    background-color: #ff9800;
+    color: white;
+}
+
+.toast-info {
+    background-color: #2196F3;
+    color: white;
+}
+
+/* Responsive footer for capture workflow */
+@media (max-width: 640px) {
+    footer {
+        padding: 0.75rem 1rem;
+    }
+
+    .capture-section {
+        flex-wrap: wrap;
+    }
+
+    .progress-section {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.5rem;
+    }
+
+    .hint-section {
+        font-size: 0.8rem;
+    }
+}
+
+/* ============================================
+   HSV Settings Overlay
+   ============================================ */
+
+#hsv-overlay {
+    position: fixed;
+    top: 60px;
+    right: 1rem;
+    width: 300px;
+    z-index: 1000;
+}
+
+#hsv-overlay.hidden {
+    display: none;
+}
+
+.hsv-content {
+    background-color: #2d2d2d;
+    border-radius: 8px;
+    padding: 1rem;
+    border: 1px solid #3d3d3d;
+}
+
+.hsv-content h2 {
+    margin-bottom: 0.25rem;
+    font-size: 1.1rem;
+}
+
+.hsv-help {
+    color: #909090;
+    font-size: 0.8rem;
+    margin-bottom: 1rem;
+}
+
+.slider-group {
+    margin-bottom: 1rem;
+}
+
+.slider-group label {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 0.25rem;
+    font-size: 0.85rem;
+}
+
+.slider-label {
+    color: #b0b0b0;
+}
+
+.slider-value {
+    color: #4caf50;
+    font-weight: 500;
+    min-width: 30px;
+    text-align: right;
+}
+
+.slider-group input[type="range"] {
+    width: 100%;
+    height: 6px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: #404040;
+    border-radius: 3px;
+    outline: none;
+}
+
+.slider-group input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    background: #4caf50;
+    border-radius: 50%;
+    cursor: pointer;
+}
+
+.slider-group input[type="range"]::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    background: #4caf50;
+    border-radius: 50%;
+    cursor: pointer;
+    border: none;
+}
+
+.hsv-actions {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: flex-end;
+    margin-top: 1rem;
+}
+
+/* Stream badge */
+.stream-badge {
+    background-color: #f44336;
+    color: white;
+    font-size: 0.6rem;
+    padding: 2px 6px;
+    border-radius: 3px;
+    margin-left: 0.5rem;
+    vertical-align: middle;
+    animation: pulse 1s infinite;
+}
+
+.stream-badge.hidden {
+    display: none;
+}
+
+/* Stream button states */
+#stream-btn.streaming {
+    background-color: #f44336;
+}
+
+#stream-btn.streaming:hover {
+    background-color: #d32f2f;
 }

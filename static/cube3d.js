@@ -118,9 +118,11 @@ function createScene() {
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x1a1a1a);
 
-    // Camera positioned to see U, L, R faces (similar to physical camera)
+    // Camera positioned to see U, F, R faces (matching physical camera view)
+    // Physical camera sees: U (top/white), F (front/red), R (right/blue)
+    // Position camera in front-right-above to see corner where these three faces meet
     camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 100);
-    camera.position.set(4, 3, 4);
+    camera.position.set(4, 4, 4);  // Front-right-above corner view
     camera.lookAt(0, 0, 0);
 
     // Renderer

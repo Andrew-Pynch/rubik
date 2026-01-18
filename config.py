@@ -22,7 +22,7 @@ def load_face_polygons() -> dict[str, list[tuple[int, int]]] | None:
     """Load face polygon ROIs from calibration.json.
 
     Returns:
-        Dict mapping face name (U, L, R) to list of 4 corner points,
+        Dict mapping face name (U, F, R) to list of 4 corner points,
         or None if calibration file doesn't exist.
     """
     if not CALIBRATION_PATH.exists():

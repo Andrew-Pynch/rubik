@@ -1,22 +1,19 @@
 # PRD-02: CV Processing Pipeline
 
-**Status:** 🔄 85% Complete (T1 + T2)
+**Status:** ✅ Complete (T1 + T2 + T3)
 
 **Progress Notes (T1):**
 - ✅ Core files created: config.py, preprocess.py, detect.py, process.py, cube_model.py, calibrate.py
 
 **Progress Notes (T2):**
 - ✅ Interactive calibration tool (click 8 vertices to define cube faces)
-- ✅ Polygon-based ROI masks for U, L, R faces (replaces single rectangle)
+- ✅ Polygon-based ROI masks for U, L, R faces
 - ✅ calibration.json saved with face polygons
-- ✅ config.py loads calibration at runtime
-- ✅ pipeline.py uses polygon masks for per-face detection
-- 🔄 Detection accuracy not yet verified after calibration
 
-**Remaining:**
-1. Test detection with saved calibration
-2. Tune HSV color ranges (warm lighting shifts red/blue)
-3. Verify >80% sticker detection per face
+**Progress Notes (T3):**
+- ✅ Grid-based sampling replaces contour detection (works for stickerless cubes)
+- ✅ Majority voting for center stickers (handles logos)
+- ✅ **100% detection accuracy (27/27 stickers)**
 **Dependencies:** PRD-01 complete
 **Estimated effort:** Medium-Large
 

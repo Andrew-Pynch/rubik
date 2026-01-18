@@ -225,7 +225,7 @@ def group_into_faces(stickers: list[DetectedSticker]) -> dict[str, list[Detected
             if avg_y < frame_h * 0.4:
                 face_name = 'U'
             elif avg_x < frame_w * 0.5:
-                face_name = 'L'
+                face_name = 'F'
             else:
                 face_name = 'R'
 
