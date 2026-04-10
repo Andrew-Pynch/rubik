@@ -26,11 +26,38 @@ class Inconsistency:
     source: str  # "face_overlap" or "edge_mismatch"
 
 
+@dataclass
+class CaptureStep:
+    """Configuration for a capture step in the predefined sequence."""
+    name: str
+    instruction: str
+    position_to_face: dict[str, str]  # Camera position (U/F/R) -> actual face
+    transforms: dict[str, int]  # Face -> rotation degrees (0, 90, 180, 270)
+
+
+# Predefined capture sequence: 2 captures with x2 rotation
+CAPTURE_SEQUENCE = [
+    CaptureStep(
+        name='initial',
+        instruction='Place cube with White face up, Red toward camera',
+        position_to_face={'U': 'U', 'F': 'F', 'R': 'R'},
+        transforms={'U': 0, 'F': 0, 'R': 0},
+    ),
+    CaptureStep(
+        name='after_x2',
+        instruction='Flip cube toward yourself (x2) - Yellow should be on top',
+        position_to_face={'U': 'D', 'F': 'B', 'R': 'L'},
+        transforms={'D': 180, 'B': 180, 'L': 180},
+    ),
+]
+
+
 class CaptureSession:
     """Manages multi-capture workflow with rotation tracking.
 
     Tracks cube state across multiple captures, validating consistency
     by comparing overlapping stickers and adjacent edge stickers.
+    Uses a predefined capture sequence (x2 rotation) for guided workflow.
     """
 
     # Map center sticker color to face name
@@ -48,6 +75,11 @@ class CaptureSession:
     FACE_TO_COLOR_NAME = {
         'U': 'White', 'D': 'Yellow', 'F': 'Red',
         'B': 'Orange', 'R': 'Blue', 'L': 'Green',
+    }
+
+    # Expected center colors for validation
+    FACE_TO_CENTER = {
+        'U': 'W', 'D': 'Y', 'F': 'R', 'B': 'O', 'R': 'B', 'L': 'G',
     }
 
     # Edge adjacency map: maps (face1, face2) to list of ((row1, col1), (row2, col2))
@@ -71,12 +103,74 @@ class CaptureSession:
         ('B', 'L'): [((0, 2), (0, 0)), ((1, 2), (1, 0)), ((2, 2), (2, 0))],
     }
 
+    # Capture sequence
+    SEQUENCE = CAPTURE_SEQUENCE
+
     def __init__(self):
         self.snapshots: list[CaptureSnapshot] = []
         self.global_state: dict[str, list[list[str]] | None] = {
             f: None for f in 'UDFBRL'
         }
+        self.global_confidences: dict[str, list[list[float]] | None] = {
+            f: None for f in 'UDFBRL'
+        }
         self.inconsistencies: list[Inconsistency] = []
+        self.current_step = 0
+
+    def get_current_step(self) -> CaptureStep | None:
+        """Get the current step in the capture sequence."""
+        if self.current_step >= len(self.SEQUENCE):
+            return None
+        return self.SEQUENCE[self.current_step]
+
+    @staticmethod
+    def transform_grid(grid: list[list[str]], rotation: int) -> list[list[str]]:
+        """Transform a 3x3 grid based on rotation degrees (clockwise).
+
+        Args:
+            grid: 3x3 color grid
+            rotation: Degrees of rotation (0, 90, 180, 270)
+
+        Returns:
+            Transformed 3x3 grid
+        """
+        if rotation == 0:
+            return [row[:] for row in grid]  # Deep copy
+        elif rotation == 90:
+            return [[grid[2-j][i] for j in range(3)] for i in range(3)]
+        elif rotation == 180:
+            return [[grid[2-i][2-j] for j in range(3)] for i in range(3)]
+        elif rotation == 270:
+            return [[grid[j][2-i] for j in range(3)] for i in range(3)]
+        return [row[:] for row in grid]
+
+    def validate_step_centers(self, detected: dict[str, list[list[str]]]) -> tuple[bool, str]:
+        """Validate that detected centers match expected faces for current step.
+
+        Args:
+            detected: Dict with camera position keys (U/F/R) and 3x3 grids
+
+        Returns:
+            (is_valid, message)
+        """
+        step = self.get_current_step()
+        if step is None:
+            return True, "All steps complete"
+
+        for camera_pos, actual_face in step.position_to_face.items():
+            if camera_pos not in detected:
+                continue
+            grid = detected[camera_pos]
+            if not grid or len(grid) < 3 or len(grid[1]) < 3:
+                continue
+            center = grid[1][1]
+            expected = self.FACE_TO_CENTER.get(actual_face)
+
+            if center != expected and center != '?':
+                expected_name = self.FACE_TO_COLOR_NAME.get(actual_face, actual_face)
+                return False, f"Expected {expected_name} ({expected}) center, got {center}. Check rotation."
+
+        return True, "OK"
 
     def identify_faces(self, positional_grids: dict[str, list[list[str]]]) -> dict[str, list[list[str]]]:
         """Map positional face names to actual face names by center color.
@@ -137,7 +231,9 @@ class CaptureSession:
                         # (This checks the relationship, not equality)
                         # For now, we just log if both are captured
                 elif face_name == f2 and self.global_state.get(f1) is not None:
-                    # Similar check in reverse
+                    # TODO(PRD-07): Implement edge consistency validation
+                    # Requires domain knowledge about valid cube states.
+                    # See EDGE_ADJACENCIES dict for sticker pair mappings.
                     pass
 
         return issues
@@ -151,6 +247,8 @@ class CaptureSession:
         Returns:
             Result dict with capture info, progress, and any inconsistencies.
         """
+        step = self.get_current_step()
+
         # 1. Identify faces by center color
         identified_faces = self.identify_faces(detected)
 
@@ -166,16 +264,22 @@ class CaptureSession:
                 'is_complete': self.is_complete,
                 'inconsistencies': [],
                 'hint': self.get_rotation_hint(),
+                'current_step': self.current_step,
+                'total_steps': len(self.SEQUENCE),
             }
 
-        # 2. Determine corner (sorted face names)
+        # 2. Validate centers match expected step (informational, don't block)
+        step_valid, step_msg = self.validate_step_centers(detected)
+        validation_warning = None if step_valid else step_msg
+
+        # 3. Determine corner (sorted face names)
         corner = ''.join(sorted(identified_faces.keys()))
 
-        # 3. Validate against existing state
+        # 4. Validate against existing state
         new_inconsistencies = self.validate_consistency(identified_faces)
         self.inconsistencies.extend(new_inconsistencies)
 
-        # 4. Record snapshot
+        # 5. Record snapshot
         snapshot = CaptureSnapshot(
             timestamp=time.time(),
             detected_faces=identified_faces,
@@ -183,7 +287,7 @@ class CaptureSession:
         )
         self.snapshots.append(snapshot)
 
-        # 5. Merge into global state (new faces only, keep existing on conflict)
+        # 6. Merge into global state (new faces only, keep existing on conflict)
         new_faces = []
         for face_name, grid in identified_faces.items():
             if self.global_state[face_name] is None:
@@ -191,8 +295,17 @@ class CaptureSession:
                 new_faces.append(face_name)
             # If face already exists and has inconsistencies, keep existing
 
-        # 6. Build result
-        return {
+        # 7. Advance step if we captured expected faces
+        step_completed = None
+        if step is not None and new_faces:
+            expected_faces = set(step.position_to_face.values())
+            captured_faces = set(self.get_captured_faces())
+            if expected_faces.issubset(captured_faces):
+                step_completed = step.name
+                self.current_step += 1
+
+        # 8. Build result
+        result = {
             'success': True,
             'detected_faces': list(identified_faces.keys()),
             'new_faces': new_faces,
@@ -211,7 +324,15 @@ class CaptureSession:
                 for i in new_inconsistencies
             ],
             'hint': self.get_rotation_hint(),
+            'current_step': self.current_step,
+            'total_steps': len(self.SEQUENCE),
+            'step_completed': step_completed,
         }
+
+        if validation_warning:
+            result['validation_warning'] = validation_warning
+
+        return result
 
     def get_captured_faces(self) -> list[str]:
         """Return list of captured face names."""
@@ -223,15 +344,16 @@ class CaptureSession:
 
     def get_rotation_hint(self) -> str:
         """Generate hint text for user about which faces to show next."""
-        missing = self.get_missing_faces()
+        # Use sequence-based hints
+        step = self.get_current_step()
+        if step is not None:
+            return step.instruction
 
+        missing = self.get_missing_faces()
         if not missing:
             return "All faces captured! Cube state is complete."
 
-        if len(missing) == 6:
-            return "Place cube in camera view and click Capture"
-
-        # Build hint with color names
+        # Fallback for non-sequence mode
         hints = [f"{self.FACE_TO_COLOR_NAME[f]} ({f})" for f in missing[:3]]
         return f"Rotate to show {', '.join(hints)}"
 
@@ -249,6 +371,7 @@ class CaptureSession:
 
     def to_json(self) -> dict[str, Any]:
         """Export session state as JSON-serializable dict."""
+        step = self.get_current_step()
         return {
             'captured': self.get_captured_faces(),
             'missing': self.get_missing_faces(),
@@ -266,10 +389,15 @@ class CaptureSession:
                 for i in self.inconsistencies
             ],
             'hint': self.get_rotation_hint(),
+            'current_step': self.current_step,
+            'total_steps': len(self.SEQUENCE),
+            'step_name': step.name if step else None,
         }
 
     def reset(self):
         """Clear all captured state."""
         self.snapshots = []
         self.global_state = {f: None for f in 'UDFBRL'}
+        self.global_confidences = {f: None for f in 'UDFBRL'}
         self.inconsistencies = []
+        self.current_step = 0

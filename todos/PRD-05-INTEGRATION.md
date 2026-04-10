@@ -1,6 +1,6 @@
 # PRD-05: Multi-Capture Guided Workflow & Integration
 
-**Status:** 🔄 40% Complete (T5 + T6)
+**Status:** 🔄 ~70% Complete (T5 + T6)
 **Dependencies:** PRD-04 complete
 **Estimated effort:** Medium-Large
 
@@ -13,12 +13,19 @@
 - ✅ Grid lines overlay on debug view
 - ✅ `run.sh` startup script with auto-reload
 - ✅ Sticky header UI with controls
+- ✅ Capture button and `/capture` endpoint
+- ✅ `/reset` and `/session` endpoints
+- ✅ CaptureSession class with multi-capture state
+- ✅ Face identification by center color
+- ✅ Progress UI (X/6 faces captured)
+- ✅ Rotation hints
+- ✅ auto_match.py for 3D orientation
 - 🔄 3D mapping mismatch (grid indexing inconsistent)
-- 🔄 Detection robustness (need multi-point sampling)
 
-**Current Bugs (T7 to fix):**
-1. 3D cube sticker positions don't match debug.jpg positions
-2. Inconsistent detection between captures (single-point sampling too noisy)
+**Remaining Work:**
+1. Fix 3D cube sticker positions to match debug.jpg
+2. Solver integration (Kociemba)
+3. Solution animation playback
 
 ## Goal
 

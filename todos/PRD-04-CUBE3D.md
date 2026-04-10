@@ -107,10 +107,10 @@ async function refreshImages() {
 const FACE_COLORS = {
     'U': 0xFFFFFF,  // White - Up
     'D': 0xFFFF00,  // Yellow - Down
-    'F': 0x00FF00,  // Green - Front
-    'B': 0x0000FF,  // Blue - Back
-    'L': 0xFF8000,  // Orange - Left
-    'R': 0xFF0000,  // Red - Right
+    'F': 0xFF0000,  // Red - Front
+    'B': 0xFF8000,  // Orange - Back
+    'L': 0x00FF00,  // Green - Left
+    'R': 0x0000FF,  // Blue - Right
     'unknown': 0x808080  // Gray - undetected
 };
 ```

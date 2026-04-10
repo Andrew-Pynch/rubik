@@ -12,7 +12,12 @@ from typing import Optional
 import cv2
 import numpy as np
 
-from config import COLOR_RANGES, COLOR_LETTERS
+from config import (
+    COLOR_RANGES, COLOR_LETTERS,
+    WHITE_DETECTION_THRESHOLD, WHITE_DETECTION_CENTER_THRESHOLD,
+    WHITE_SAT_MAX, WHITE_VAL_MIN,
+    DETECTION_SAMPLING,
+)
 
 
 @dataclass
@@ -57,13 +62,14 @@ def sample_sticker_multipoint(
     center_y: int,
     row: int,
     col: int,
-    region_size: int = 30,
-    grid_points: int = 3,
+    region_size: int | None = None,
+    grid_points: int | None = None,
 ) -> StickerSample:
     """Sample multiple points within a sticker cell with outlier rejection.
 
-    Samples a 3x3 grid of points within the sticker region, applies MAD-based
-    outlier rejection on hue values, and computes a robust consensus HSV.
+    Samples a 5x5 grid of points (25 total) within the sticker region with
+    Gaussian center weighting, applies MAD-based outlier rejection on hue
+    values, and computes a robust consensus HSV.
 
     Args:
         hsv_frame: Full HSV image.
@@ -72,20 +78,31 @@ def sample_sticker_multipoint(
         row: Row index in face grid (0-2).
         col: Column index in face grid (0-2).
         region_size: Total size of sampling region in pixels (default 30).
-        grid_points: Number of points per axis (default 3 = 9 total points).
+        grid_points: Number of points per axis (default 5 = 25 total points).
 
     Returns:
         StickerSample with consensus HSV, spread metric, and sample points.
     """
+    # Use config defaults if not specified
+    if region_size is None:
+        region_size = DETECTION_SAMPLING['region_size']
+    if grid_points is None:
+        grid_points = DETECTION_SAMPLING['grid_points']
+
     samples: list[SamplePoint] = []
+    weights: list[float] = []
     step = region_size // (grid_points + 1)
+
+    # Gaussian weighting parameters (center samples count more)
+    center_idx = (grid_points - 1) / 2
+    sigma = grid_points / 3.0  # Spread of Gaussian
 
     # Sample at grid_points x grid_points positions
     for i in range(grid_points):
         for j in range(grid_points):
             # Offset from center to create grid
-            dx = (i - (grid_points - 1) / 2) * step
-            dy = (j - (grid_points - 1) / 2) * step
+            dx = (i - center_idx) * step
+            dy = (j - center_idx) * step
 
             x = int(center_x + dx)
             y = int(center_y + dy)
@@ -106,8 +123,14 @@ def sample_sticker_multipoint(
 
             samples.append(SamplePoint(x, y, h, s, v))
 
-    # Need at least 3 samples for meaningful statistics
-    if len(samples) < 3:
+            # Gaussian weight: center=1.0, edges~0.4
+            dist_from_center = np.sqrt((i - center_idx)**2 + (j - center_idx)**2)
+            weight = float(np.exp(-0.5 * (dist_from_center / sigma)**2))
+            weights.append(weight)
+
+    # Need minimum samples for meaningful statistics
+    min_samples = DETECTION_SAMPLING['min_samples_required']
+    if len(samples) < min_samples:
         return StickerSample(
             row=row, col=col,
             points=samples,
@@ -138,7 +161,7 @@ def sample_sticker_multipoint(
             inliers.append(s)
 
     # If too few inliers, keep all samples
-    if len(inliers) < 3:
+    if len(inliers) < min_samples:
         inliers = samples
 
     # Compute consensus HSV from inliers
@@ -156,7 +179,8 @@ def sample_sticker_multipoint(
 
     # Recalculate MAD for spread metric using original hues
     final_mad = np.median(np.abs(np.array([s.h for s in inliers]) - consensus_h))
-    spread = min(final_mad / 36.0, 1.0)  # Normalize: MAD of 36 (20% of 180) = 1.0
+    spread_norm = DETECTION_SAMPLING['spread_normalization']
+    spread = min(final_mad / spread_norm, 1.0)  # Normalize: MAD of spread_norm (20% of 180) = 1.0
 
     return StickerSample(
         row=row, col=col,
@@ -166,6 +190,107 @@ def sample_sticker_multipoint(
         color_letter='?',  # Will be filled by classify
         confidence=0.0     # Will be filled by compute_confidence
     )
+
+
+def compute_white_percentage(samples: list[SamplePoint]) -> float:
+    """Compute percentage of samples that match white HSV criteria.
+
+    White is defined as: low saturation (s < WHITE_SAT_MAX) and high value
+    (v > WHITE_VAL_MIN). This is robust to logos since logos are typically
+    saturated colors.
+
+    Args:
+        samples: List of SamplePoint with h, s, v values.
+
+    Returns:
+        Percentage of samples matching white criteria (0.0 to 1.0).
+    """
+    if not samples:
+        return 0.0
+
+    white_count = sum(
+        1 for s in samples
+        if s.s < WHITE_SAT_MAX and s.v > WHITE_VAL_MIN
+    )
+
+    return white_count / len(samples)
+
+
+def detect_sticker_histogram(
+    hsv_frame: np.ndarray,
+    center_x: int,
+    center_y: int,
+    cell_size: int = 30,
+) -> tuple[str, float] | None:
+    """Histogram-based color detection as fallback for low-confidence cases.
+
+    Analyzes color distribution in the sticker region rather than relying on
+    point samples. Useful when point sampling has high spread or low confidence.
+
+    Args:
+        hsv_frame: HSV image.
+        center_x, center_y: Center of sticker cell.
+        cell_size: Approximate cell size in pixels.
+
+    Returns:
+        (color_letter, confidence) or None if no dominant color found.
+    """
+    # Extract region (50% of cell size to avoid edges)
+    half_size = cell_size // 4
+    y1 = max(0, center_y - half_size)
+    y2 = min(hsv_frame.shape[0], center_y + half_size)
+    x1 = max(0, center_x - half_size)
+    x2 = min(hsv_frame.shape[1], center_x + half_size)
+
+    region = hsv_frame[y1:y2, x1:x2]
+
+    if region.size < 100:  # Need minimum pixels for meaningful histogram
+        return None
+
+    total_pixels = region.shape[0] * region.shape[1]
+    color_scores: dict[str, float] = {}
+
+    for color_name, ranges in COLOR_RANGES.items():
+        h_range = ranges['h']
+        s_range = ranges['s']
+        v_range = ranges['v']
+
+        # Create mask for saturation and value
+        s_mask = (region[:, :, 1] >= s_range[0]) & (region[:, :, 1] <= s_range[1])
+        v_mask = (region[:, :, 2] >= v_range[0]) & (region[:, :, 2] <= v_range[1])
+
+        # Handle hue (including red wraparound)
+        if isinstance(h_range, list):
+            # Red has two ranges
+            h_mask = np.zeros(region.shape[:2], dtype=bool)
+            for hr in h_range:
+                h_mask |= (region[:, :, 0] >= hr[0]) & (region[:, :, 0] <= hr[1])
+        else:
+            h_mask = (region[:, :, 0] >= h_range[0]) & (region[:, :, 0] <= h_range[1])
+
+        full_mask = h_mask & s_mask & v_mask
+        pixel_count = int(np.sum(full_mask))
+        color_scores[color_name] = pixel_count / total_pixels
+
+    if not color_scores:
+        return None
+
+    # Find dominant color
+    best_color = max(color_scores, key=lambda k: color_scores[k])
+    best_score = color_scores[best_color]
+
+    # Need minimum pixel coverage
+    min_coverage = DETECTION_SAMPLING['histogram_min_coverage']
+    if best_score < min_coverage:
+        return None
+
+    # Confidence based on dominance
+    sorted_scores = sorted(color_scores.values(), reverse=True)
+    second_best = sorted_scores[1] if len(sorted_scores) > 1 else 0
+    margin = best_score - second_best
+    confidence = min(best_score + margin, 0.95)
+
+    return COLOR_LETTERS[best_color], confidence
 
 
 def compute_color_distance(
@@ -279,6 +404,7 @@ def compute_confidence(
 def classify_sticker(
     sample: StickerSample,
     hsv_offsets: dict | None = None,
+    is_center: bool = False,
 ) -> StickerSample:
     """Classify a sticker sample to a color with confidence.
 
@@ -288,10 +414,25 @@ def classify_sticker(
     Args:
         sample: StickerSample with consensus_hsv computed.
         hsv_offsets: Optional dict with 'h', 's', 'v' offset values.
+        is_center: Whether this is a center sticker (row=1, col=1).
+            Center stickers use a lower white detection threshold to handle logos.
 
     Returns:
         The same StickerSample with classification filled in.
     """
+    # Check for white override based on pixel percentage
+    # This handles logos on white stickers (e.g., GAN cube blue logo)
+    white_pct = compute_white_percentage(sample.points)
+    threshold = WHITE_DETECTION_CENTER_THRESHOLD if is_center else WHITE_DETECTION_THRESHOLD
+
+    if white_pct >= threshold:
+        sample.color_name = 'white'
+        sample.color_letter = 'W'
+        # Confidence based on how many white pixels, capped at 0.95
+        sample.confidence = min(0.95, white_pct)
+        sample.alternatives = []
+        return sample
+
     h, s, v = sample.consensus_hsv
 
     # Apply global offsets if provided
@@ -383,8 +524,28 @@ def detect_face_grid_robust(
             # Multi-point sampling
             sample = sample_sticker_multipoint(hsv_frame, x, y, row, col)
 
-            # Classify with confidence
-            sample = classify_sticker(sample, hsv_offsets)
+            # Classify with confidence (pass is_center for logo handling)
+            is_center = (row == 1 and col == 1)
+            sample = classify_sticker(sample, hsv_offsets, is_center=is_center)
+
+            # Histogram fallback for low-confidence or unknown stickers
+            low_conf_thresh = DETECTION_SAMPLING['low_confidence_threshold']
+            if sample.confidence < low_conf_thresh or sample.color_letter == '?':
+                hist_result = detect_sticker_histogram(
+                    hsv_frame, x, y, cell_size=DETECTION_SAMPLING['region_size']
+                )
+                if hist_result:
+                    hist_letter, hist_conf = hist_result
+                    # Use histogram result if it's more confident
+                    if hist_conf > sample.confidence:
+                        sample.color_letter = hist_letter
+                        # Blend confidences (histogram is backup, so slight discount)
+                        sample.confidence = (sample.confidence + hist_conf * 0.9) / 2
+                        # Find color name from letter
+                        for name, letter in COLOR_LETTERS.items():
+                            if letter == hist_letter:
+                                sample.color_name = name
+                                break
 
             row_colors.append(sample.color_letter)
             row_confidences.append(sample.confidence)

@@ -18,10 +18,12 @@ from config import (
     COLOR_LETTERS,
     COLOR_RANGES,
     FACE_POLYGONS,
+    LIGHTING_NORMALIZATION,
     OUTPUT_DIR,
     load_face_polygons,
 )
 from cube_model import CubeState
+from logging_config import logger
 from detection import (
     StickerSample,
     detect_face_grid_robust,
@@ -969,7 +971,7 @@ def detect_face_grid_with_offsets(
             return colors, confidences
         return colors
     except Exception as e:
-        print(f"Warning: Robust detection failed for {face_name}: {e}")
+        logger.warning(f"Robust detection failed for {face_name}: {e}")
         # Fall back to original single-point detection
         return _detect_face_grid_legacy(hsv_frame, polygon, face_name, hsv_offsets)
 
@@ -1146,10 +1148,34 @@ def detect_from_frames(
         or (colors, confidences) tuple if return_confidence=True,
         or None if detection failed.
     """
+    from preprocess import apply_adaptive_clahe, analyze_face_lighting
+
     # Load face polygons
     face_polygons = load_face_polygons()
     if not face_polygons:
         return None
+
+    # Apply adaptive CLAHE if enabled and any face is dark
+    working_hsv = hsv_frame
+    if LIGHTING_NORMALIZATION.get('clahe_enabled', False):
+        # Check if any face needs CLAHE
+        low_threshold = LIGHTING_NORMALIZATION.get('low_light_threshold', 100)
+        needs_clahe = False
+        for face_name, polygon in face_polygons.items():
+            profile = analyze_face_lighting(hsv_frame, polygon, face_name, low_threshold)
+            if profile.clahe_recommended:
+                needs_clahe = True
+                break
+
+        if needs_clahe:
+            clip_limit = LIGHTING_NORMALIZATION.get('clahe_clip_limit', 2.0)
+            tile_grid = tuple(LIGHTING_NORMALIZATION.get('clahe_tile_grid', (4, 4)))
+            normalized_bgr, _ = apply_adaptive_clahe(
+                bgr_frame, face_polygons, clip_limit, tile_grid, low_threshold
+            )
+            # Recompute HSV from normalized BGR
+            filtered = cv2.bilateralFilter(normalized_bgr, d=9, sigmaColor=75, sigmaSpace=75)
+            working_hsv = cv2.cvtColor(filtered, cv2.COLOR_BGR2HSV)
 
     # Detect each face with confidence
     colors: dict[str, list[list[str]]] = {}
@@ -1157,7 +1183,7 @@ def detect_from_frames(
 
     for face_name, polygon in face_polygons.items():
         result = detect_face_grid_with_offsets(
-            hsv_frame, polygon, face_name, return_confidence=True
+            working_hsv, polygon, face_name, return_confidence=True
         )
         if result:
             if isinstance(result, tuple):
@@ -1185,6 +1211,185 @@ def detect_from_frames(
     return colors
 
 
+def detect_with_full_debug(
+    bgr_frame: np.ndarray,
+    hsv_frame: np.ndarray,
+    hsv_offsets: dict | None = None,
+) -> dict | None:
+    """Detect faces with full debug information for troubleshooting.
+
+    Returns comprehensive data including per-sticker HSV values, confidence
+    scores, alternatives, and reason codes for unknown stickers.
+
+    Args:
+        bgr_frame: Preprocessed BGR frame.
+        hsv_frame: Preprocessed HSV frame.
+        hsv_offsets: Optional HSV offset values.
+
+    Returns:
+        Dict with debug info or None if detection failed.
+    """
+    from detection import detect_face_grid_robust, StickerSample
+    from preprocess import analyze_face_lighting, apply_adaptive_clahe
+
+    face_polygons = load_face_polygons()
+    if not face_polygons:
+        return None
+
+    # Analyze lighting from V channel (global)
+    v_channel = hsv_frame[:, :, 2]
+    lighting = {
+        "average_brightness": round(float(np.mean(v_channel)), 1),
+        "contrast": round(float(np.std(v_channel)), 1),
+    }
+    if lighting["average_brightness"] < 80:
+        lighting["assessment"] = "low"
+    elif lighting["average_brightness"] > 220:
+        lighting["assessment"] = "high"
+    elif lighting["contrast"] > 80:
+        lighting["assessment"] = "uneven"
+    else:
+        lighting["assessment"] = "good"
+
+    # Analyze per-face lighting
+    low_threshold = LIGHTING_NORMALIZATION.get('low_light_threshold', 100)
+    lighting_per_face = {}
+    clahe_applied = False
+    working_hsv = hsv_frame
+
+    for face_name, polygon in face_polygons.items():
+        profile = analyze_face_lighting(hsv_frame, polygon, face_name, low_threshold)
+        lighting_per_face[face_name] = {
+            "median_v": round(profile.median_v, 1),
+            "std_v": round(profile.std_v, 1),
+            "brightness_level": profile.brightness_level,
+            "clahe_recommended": profile.clahe_recommended,
+        }
+
+    # Apply adaptive CLAHE if enabled and needed
+    if LIGHTING_NORMALIZATION.get('clahe_enabled', False):
+        needs_clahe = any(lp["clahe_recommended"] for lp in lighting_per_face.values())
+        if needs_clahe:
+            clip_limit = LIGHTING_NORMALIZATION.get('clahe_clip_limit', 2.0)
+            tile_grid = tuple(LIGHTING_NORMALIZATION.get('clahe_tile_grid', (4, 4)))
+            normalized_bgr, profiles_after = apply_adaptive_clahe(
+                bgr_frame, face_polygons, clip_limit, tile_grid, low_threshold
+            )
+            filtered = cv2.bilateralFilter(normalized_bgr, d=9, sigmaColor=75, sigmaSpace=75)
+            working_hsv = cv2.cvtColor(filtered, cv2.COLOR_BGR2HSV)
+            clahe_applied = True
+
+            # Update lighting profiles with post-CLAHE values
+            for face_name, polygon in face_polygons.items():
+                profile_after = analyze_face_lighting(working_hsv, polygon, face_name, low_threshold)
+                lighting_per_face[face_name]["median_v_after"] = round(profile_after.median_v, 1)
+                lighting_per_face[face_name]["clahe_applied"] = profiles_after[face_name].clahe_recommended
+
+    lighting["per_face"] = lighting_per_face
+    lighting["clahe_enabled"] = LIGHTING_NORMALIZATION.get('clahe_enabled', False)
+    lighting["clahe_applied"] = clahe_applied
+
+    # Detect each face with full sample data
+    stickers: dict[str, list[dict]] = {}
+    colors: dict[str, list[list[str]]] = {}
+    confidences: dict[str, list[list[float]]] = {}
+    all_samples: list[StickerSample] = []
+
+    for face_name, polygon in face_polygons.items():
+        face_colors, face_confs, samples = detect_face_grid_robust(
+            working_hsv, polygon, face_name, hsv_offsets
+        )
+        colors[face_name] = face_colors
+        confidences[face_name] = face_confs
+
+        # Convert samples to debug-friendly dicts
+        face_stickers: list[dict] = []
+        for sample in samples:
+            # Determine reason for unknown stickers
+            reason = None
+            if sample.color_letter == '?':
+                if len(sample.points) < 5:
+                    reason = "insufficient_samples"
+                elif sample.spread > 0.3:
+                    reason = "high_spread"
+                elif sample.alternatives and sample.alternatives[0][1] > 0.4:
+                    reason = "boundary_case"
+                else:
+                    reason = "no_color_match"
+
+            sticker_info = {
+                "position": [sample.row, sample.col],
+                "color": sample.color_letter,
+                "hsv": {
+                    "h": round(sample.consensus_hsv[0], 1),
+                    "s": round(sample.consensus_hsv[1], 1),
+                    "v": round(sample.consensus_hsv[2], 1),
+                },
+                "confidence": round(sample.confidence, 3),
+                "spread": round(sample.spread, 3),
+                "sample_count": len(sample.points),
+                "alternatives": [
+                    {"color": alt[0], "confidence": round(alt[1], 2)}
+                    for alt in sample.alternatives[:2]
+                ],
+                "reason": reason,
+            }
+            face_stickers.append(sticker_info)
+            all_samples.append(sample)
+
+        stickers[face_name] = face_stickers
+
+    # Summary stats
+    confident_count = sum(1 for s in all_samples if s.confidence >= 0.5)
+    uncertain_count = sum(1 for s in all_samples if 0.2 <= s.confidence < 0.5)
+    unknown_count = sum(1 for s in all_samples if s.color_letter == '?')
+    avg_conf = sum(s.confidence for s in all_samples) / len(all_samples) if all_samples else 0
+
+    # Generate debugging hints
+    hints: list[dict] = []
+    if lighting["assessment"] == "low":
+        hints.append({
+            "severity": "warning",
+            "category": "lighting",
+            "message": "Low brightness - increase lighting",
+        })
+    elif lighting["assessment"] == "uneven":
+        hints.append({
+            "severity": "info",
+            "category": "lighting",
+            "message": "Uneven lighting - shadows may affect detection",
+        })
+
+    for face_name, face_stickers in stickers.items():
+        unknown_in_face = sum(1 for s in face_stickers if s["color"] == "?")
+        if unknown_in_face > 3:
+            hints.append({
+                "severity": "warning",
+                "category": "detection",
+                "message": f"Face {face_name} has {unknown_in_face} unknown stickers",
+            })
+
+    return {
+        "frame": {
+            "width": bgr_frame.shape[1],
+            "height": bgr_frame.shape[0],
+        },
+        "lighting": lighting,
+        "hsv_offsets": hsv_offsets or {"h": 0, "s": 0, "v": 0},
+        "stickers": stickers,
+        "colors": colors,
+        "confidences": confidences,
+        "summary": {
+            "total_stickers": len(all_samples),
+            "confident_count": confident_count,
+            "uncertain_count": uncertain_count,
+            "unknown_count": unknown_count,
+            "average_confidence": round(avg_conf, 3),
+        },
+        "hints": hints,
+    }
+
+
 def run_pipeline() -> CubeState | None:
     """Main entry point - captures, processes, saves outputs.
 
@@ -1195,29 +1400,29 @@ def run_pipeline() -> CubeState | None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     # Capture frame
-    print("Capturing frame...")
+    logger.info("Capturing frame...")
     frame = capture_frame()
     if frame is None:
-        print("ERROR: Failed to capture frame")
+        logger.error("Failed to capture frame")
         return None
 
     # Preprocess
-    print("Preprocessing...")
+    logger.info("Preprocessing...")
     bgr_frame, hsv_frame = preprocess(frame)
 
     # Save raw frame
     raw_path = OUTPUT_DIR / "raw.jpg"
     cv2.imwrite(str(raw_path), bgr_frame)
-    print(f"Saved: {raw_path}")
+    logger.info(f"Saved: {raw_path}")
 
     # Load face polygons (reload in case calibration changed)
     face_polygons = load_face_polygons()
 
     if face_polygons:
-        print(f"Using calibrated face polygons: {list(face_polygons.keys())}")
+        logger.info(f"Using calibrated face polygons: {list(face_polygons.keys())}")
 
         # Use robust multi-point detection with confidence scoring
-        print("Detecting colors using robust multi-point sampling...")
+        logger.info("Detecting colors using robust multi-point sampling...")
         colors: dict[str, list[list[str]]] = {}
         confidences: dict[str, list[list[float]]] = {}
 
@@ -1237,16 +1442,16 @@ def run_pipeline() -> CubeState | None:
                 # Count detected (non-'?') stickers and average confidence
                 detected = sum(1 for row in colors[face_name] for c in row if c != '?')
                 avg_conf = sum(sum(row) for row in confidences[face_name]) / 9
-                print(f"  {face_name}: {detected}/9 stickers detected (avg conf: {avg_conf:.2f})")
+                logger.info(f"  {face_name}: {detected}/9 stickers detected (avg conf: {avg_conf:.2f})")
 
         total = sum(sum(1 for row in g for c in row if c != '?') for g in colors.values())
-        print(f"Total: {total} stickers in {len(colors)} faces")
+        logger.info(f"Total: {total} stickers in {len(colors)} faces")
 
         # Create empty faces dict for debug overlay (no contours in grid mode)
         faces: dict[str, list[DetectedSticker]] = {}
     else:
-        print("WARNING: No calibration found - detection will be limited")
-        print("Use the web UI to calibrate face polygons")
+        logger.warning("No calibration found - detection will be limited")
+        logger.warning("Use the web UI to calibrate face polygons")
         faces = {}
         colors = {}
         confidences = {}
@@ -1263,15 +1468,15 @@ def run_pipeline() -> CubeState | None:
     debug_frame = draw_debug_overlay(bgr_frame, faces, face_polygons, colors)
     debug_path = OUTPUT_DIR / "debug.jpg"
     cv2.imwrite(str(debug_path), debug_frame)
-    print(f"Saved: {debug_path}")
+    logger.info(f"Saved: {debug_path}")
 
     # Save state JSON
     state_path = OUTPUT_DIR / "state.json"
     with open(state_path, 'w') as f:
         json.dump(state.to_json(), f, indent=2)
-    print(f"Saved: {state_path}")
+    logger.info(f"Saved: {state_path}")
 
-    print(f"\nResult: {state}")
+    logger.info(f"Result: {state}")
     return state
 
 
@@ -1284,6 +1489,6 @@ if __name__ == "__main__":
     try:
         from screenshot_3d import capture_with_server
         screenshot_path = capture_with_server()
-        print(f"3D screenshot: {screenshot_path}")
+        logger.info(f"3D screenshot: {screenshot_path}")
     except Exception as e:
-        print(f"Warning: Could not capture 3D screenshot: {e}")
+        logger.warning(f"Could not capture 3D screenshot: {e}")

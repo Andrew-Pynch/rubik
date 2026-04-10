@@ -24,6 +24,8 @@
             <button id="calibrate-btn" class="btn">Calibrate</button>
             <button id="save-defaults-btn" class="btn" title="Save current ROI as application default">Save ROI</button>
             <button id="settings-btn" class="btn">⚙ HSV</button>
+            <button id="ground-truth-btn" class="btn" title="Mark expected colors for testing">🎯 Ground Truth</button>
+            <button id="calibrate-3d-btn" class="btn" title="Calibrate 3D face mapping">🔄 3D Calibration</button>
             <div class="connection-status">
                 <span id="status-indicator" class="indicator disconnected"></span>
                 <span id="status-text">Disconnected</span>
@@ -87,6 +89,70 @@
         </div>
     </div>
 
+    <!-- Ground Truth overlay -->
+    <div id="ground-truth-overlay" class="hidden">
+        <div class="ground-truth-content">
+            <h2>Mark Ground Truth</h2>
+            <p class="gt-help">Click a sticker on the debug image, then select its correct color below.</p>
+            <div class="gt-selected">
+                <span>Selected: </span>
+                <span id="gt-selected-sticker">None</span>
+            </div>
+            <div class="gt-colors">
+                <button class="gt-color-btn" data-color="W" style="background:#ffffff;color:#000">W</button>
+                <button class="gt-color-btn" data-color="Y" style="background:#ffff00;color:#000">Y</button>
+                <button class="gt-color-btn" data-color="O" style="background:#ff8c00;color:#fff">O</button>
+                <button class="gt-color-btn" data-color="R" style="background:#ff0000;color:#fff">R</button>
+                <button class="gt-color-btn" data-color="G" style="background:#00ff00;color:#000">G</button>
+                <button class="gt-color-btn" data-color="B" style="background:#0000ff;color:#fff">B</button>
+            </div>
+            <div class="gt-status">
+                <span id="gt-count">0/27 marked</span>
+            </div>
+            <div class="gt-actions">
+                <button id="gt-clear" class="btn btn-secondary">Clear All</button>
+                <button id="gt-save" class="btn btn-primary">Save</button>
+                <button id="gt-close" class="btn">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 3D Calibration overlay -->
+    <div id="calibrate-3d-overlay" class="hidden">
+        <div class="cal3d-content">
+            <h2>3D Calibration</h2>
+            <p class="cal3d-help">Click a 3D cube face to map it</p>
+
+            <div class="cal3d-section">
+                <span class="cal3d-label">Camera ROI:</span>
+                <div class="cal3d-face-tabs">
+                    <button class="cal3d-tab selected" data-face="U">U</button>
+                    <button class="cal3d-tab" data-face="F">F</button>
+                    <button class="cal3d-tab" data-face="R">R</button>
+                </div>
+            </div>
+
+            <div class="cal3d-mapping">
+                <span class="cal3d-label">Maps to:</span>
+                <span id="cal3d-target" class="cal3d-target-value">U</span>
+                <span class="cal3d-hint">(click cube)</span>
+            </div>
+
+            <div class="cal3d-rotation">
+                <span class="cal3d-label">Rotation:</span>
+                <button id="cal3d-rot-left" class="btn cal3d-rot-btn">&lt;</button>
+                <span id="cal3d-rot-value" class="cal3d-rot-display">0°</span>
+                <button id="cal3d-rot-right" class="btn cal3d-rot-btn">&gt;</button>
+            </div>
+
+            <div class="cal3d-actions">
+                <button id="cal3d-reset" class="btn btn-secondary">Reset All</button>
+                <button id="cal3d-save" class="btn btn-primary">Save</button>
+                <button id="cal3d-close" class="btn">Close</button>
+            </div>
+        </div>
+    </div>
+
     <main class="panel-container">
         <section class="panel">
             <h2>Raw Frame</h2>
@@ -104,9 +170,16 @@
         </section>
 
         <section class="panel">
-            <h2>3D Cube</h2>
+            <h2>3D Cube Comparison</h2>
+            <div class="cube-labels">
+                <span class="cube-label">Estimation</span>
+                <span class="cube-label">Ground Truth</span>
+            </div>
             <div class="cube-container" id="cube-3d">
-                <!-- Three.js canvas will be inserted here -->
+                <!-- Three.js canvas with dual cubes will be inserted here -->
+            </div>
+            <div class="accuracy-summary" id="accuracy-summary">
+                <!-- Filled dynamically: "23/27 correct (85%)" -->
             </div>
         </section>
     </main>
@@ -115,6 +188,19 @@
         <div class="capture-section">
             <button id="capture-btn" class="btn btn-primary btn-large">📷 Capture</button>
             <button id="reset-btn" class="btn btn-secondary">Reset</button>
+        </div>
+        <div class="step-indicator">
+            <div class="step active" id="step-0" data-step="0">
+                <span class="step-num">1</span>
+                <span class="step-label">Initial</span>
+                <span class="step-faces">U F R</span>
+            </div>
+            <div class="step-arrow">→</div>
+            <div class="step pending" id="step-1" data-step="1">
+                <span class="step-num">2</span>
+                <span class="step-label">After x2</span>
+                <span class="step-faces">D B L</span>
+            </div>
         </div>
         <div class="progress-section">
             <div class="face-icons">

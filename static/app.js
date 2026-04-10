@@ -1,6 +1,16 @@
 // WebSocket client for Rubik's Cube CV Debugger
 
-import { initCube3D, updateCubeState } from './cube3d.js';
+import {
+    initCube3D,
+    updateCubeState,
+    updateGroundTruthCube,
+    setOrientations,
+    getOrientations,
+    highlightFace,
+    showFaceLabels,
+    enableFaceClickMode,
+    disableFaceClickMode
+} from './cube3d.js';
 
 const WS_URL = `ws://${location.host}/ws`;
 const RECONNECT_BASE_DELAY = 1000;
@@ -545,6 +555,22 @@ function updateProgressUI(result) {
         rotationHint.textContent = result.hint;
     }
 
+    // Update step indicator
+    const currentStep = result.current_step ?? 0;
+    const totalSteps = result.total_steps ?? 2;
+    const stepElements = document.querySelectorAll('.step-indicator .step');
+    stepElements.forEach(stepEl => {
+        const stepIdx = parseInt(stepEl.dataset.step, 10);
+        stepEl.classList.remove('completed', 'active', 'pending');
+        if (stepIdx < currentStep) {
+            stepEl.classList.add('completed');
+        } else if (stepIdx === currentStep) {
+            stepEl.classList.add('active');
+        } else {
+            stepEl.classList.add('pending');
+        }
+    });
+
     // Update face icons
     const captured = result.captured || [];
     faceIcons.forEach(icon => {
@@ -666,7 +692,7 @@ if (resetBtn) {
 // ============================================
 
 // Initialize cube after a short delay to ensure container is sized
-setTimeout(() => {
+setTimeout(async () => {
     const cubeContainer = document.getElementById('cube-3d');
     if (cubeContainer) {
         console.log('Initializing 3D cube, container size:',
@@ -674,10 +700,29 @@ setTimeout(() => {
         const success = initCube3D(cubeContainer);
         if (success) {
             console.log('3D cube initialized successfully');
-            // Fetch initial state
-            fetchCubeState().then(state => {
-                if (state) updateCubeState(state);
-            });
+
+            // Load ground truth for the right cube
+            try {
+                const gtResponse = await fetch('/ground-truth');
+                if (gtResponse.ok) {
+                    const gtData = await gtResponse.json();
+                    if (gtData.colors) {
+                        groundTruthData = gtData.colors;
+                        groundTruth = gtData.colors;  // Also update local state
+                        updateGroundTruthCube(groundTruthData);
+                        console.log('Ground truth loaded for 3D cube');
+                    }
+                }
+            } catch (e) {
+                console.warn('No ground truth data available:', e.message);
+            }
+
+            // Fetch initial state for estimation cube
+            const state = await fetchCubeState();
+            if (state) {
+                updateCubeState(state);
+                updateAccuracySummary(state, groundTruthData);
+            }
         } else {
             console.error('Failed to initialize 3D cube');
         }
@@ -736,6 +781,8 @@ refreshImages = async function() {
     const state = await fetchCubeState();
     if (state) {
         updateCubeState(state);
+        // Update accuracy summary with ground truth comparison
+        updateAccuracySummary(state, groundTruthData);
     }
 
     // Update last update time
@@ -844,3 +891,601 @@ if (hsvReset) {
         });
     }
 });
+
+// ============================================
+// Ground Truth Mode
+// ============================================
+
+const gtBtn = document.getElementById('ground-truth-btn');
+const gtOverlay = document.getElementById('ground-truth-overlay');
+const gtSelectedSticker = document.getElementById('gt-selected-sticker');
+const gtCount = document.getElementById('gt-count');
+const gtColorBtns = document.querySelectorAll('.gt-color-btn');
+const gtClear = document.getElementById('gt-clear');
+const gtSave = document.getElementById('gt-save');
+const gtClose = document.getElementById('gt-close');
+
+let gtMode = false;
+let gtSelectedFace = null;
+let gtSelectedRow = null;
+let gtSelectedCol = null;
+
+// Ground truth data for 3D cube comparison
+let groundTruthData = null;
+
+let groundTruth = {
+    U: [[null, null, null], [null, null, null], [null, null, null]],
+    F: [[null, null, null], [null, null, null], [null, null, null]],
+    R: [[null, null, null], [null, null, null], [null, null, null]],
+};
+
+// Sticker grid positions relative to face polygons (approximate centers)
+// These are u, v coordinates within each face (0-1 range)
+const STICKER_UV = [
+    [0.17, 0.17], [0.50, 0.17], [0.83, 0.17],
+    [0.17, 0.50], [0.50, 0.50], [0.83, 0.50],
+    [0.17, 0.83], [0.50, 0.83], [0.83, 0.83],
+];
+
+function toggleGtMode() {
+    gtMode = !gtMode;
+    if (gtMode) {
+        gtOverlay.classList.remove('hidden');
+        document.body.classList.add('gt-mode');
+        fetchGroundTruth();
+    } else {
+        gtOverlay.classList.add('hidden');
+        document.body.classList.remove('gt-mode');
+    }
+}
+
+function updateGtCount() {
+    let count = 0;
+    for (const face of ['U', 'F', 'R']) {
+        for (let row = 0; row < 3; row++) {
+            for (let col = 0; col < 3; col++) {
+                if (groundTruth[face][row][col]) count++;
+            }
+        }
+    }
+    gtCount.textContent = `${count}/27 marked`;
+}
+
+function selectGtSticker(face, row, col) {
+    gtSelectedFace = face;
+    gtSelectedRow = row;
+    gtSelectedCol = col;
+    const current = groundTruth[face][row][col] || '?';
+    gtSelectedSticker.textContent = `${face}[${row},${col}] = ${current}`;
+
+    // Highlight current color button
+    gtColorBtns.forEach(btn => {
+        btn.classList.toggle('selected', btn.dataset.color === current);
+    });
+}
+
+function setGtColor(color) {
+    if (gtSelectedFace && gtSelectedRow !== null && gtSelectedCol !== null) {
+        groundTruth[gtSelectedFace][gtSelectedRow][gtSelectedCol] = color;
+        gtSelectedSticker.textContent = `${gtSelectedFace}[${gtSelectedRow},${gtSelectedCol}] = ${color}`;
+        updateGtCount();
+
+        // Highlight selected button
+        gtColorBtns.forEach(btn => {
+            btn.classList.toggle('selected', btn.dataset.color === color);
+        });
+    }
+}
+
+// Order polygon corners as TL, TR, BR, BL (matching pipeline.py)
+function orderPolygonCorners(polygon) {
+    const pts = polygon.map(p => ({x: p[0], y: p[1]}));
+
+    // Sort by y first to get top vs bottom
+    pts.sort((a, b) => a.y - b.y);
+    const topPts = pts.slice(0, 2);
+    const bottomPts = pts.slice(2, 4);
+
+    // Sort each pair by x to get left vs right
+    topPts.sort((a, b) => a.x - b.x);
+    bottomPts.sort((a, b) => a.x - b.x);
+
+    // Return as [TL, TR, BR, BL]
+    return [
+        [topPts[0].x, topPts[0].y],
+        [topPts[1].x, topPts[1].y],
+        [bottomPts[1].x, bottomPts[1].y],
+        [bottomPts[0].x, bottomPts[0].y]
+    ];
+}
+
+// Bilinear interpolation to find UV coords within a quad
+function pointInQuad(px, py, corners) {
+    // corners: [TL, TR, BR, BL] as [[x,y], ...]
+    const [tl, tr, br, bl] = corners;
+
+    // Use inverse bilinear interpolation
+    // Iterative solution for non-rectangular quads
+    let u = 0.5, v = 0.5;
+
+    for (let iter = 0; iter < 10; iter++) {
+        // Compute point at current (u, v)
+        const x = (1-u)*(1-v)*tl[0] + u*(1-v)*tr[0] + u*v*br[0] + (1-u)*v*bl[0];
+        const y = (1-u)*(1-v)*tl[1] + u*(1-v)*tr[1] + u*v*br[1] + (1-u)*v*bl[1];
+
+        // Compute Jacobian
+        const dxdu = -(1-v)*tl[0] + (1-v)*tr[0] + v*br[0] - v*bl[0];
+        const dxdv = -(1-u)*tl[0] - u*tr[0] + u*br[0] + (1-u)*bl[0];
+        const dydu = -(1-v)*tl[1] + (1-v)*tr[1] + v*br[1] - v*bl[1];
+        const dydv = -(1-u)*tl[1] - u*tr[1] + u*br[1] + (1-u)*bl[1];
+
+        // Solve for delta
+        const det = dxdu * dydv - dxdv * dydu;
+        if (Math.abs(det) < 1e-10) break;
+
+        const dx = px - x;
+        const dy = py - y;
+
+        const du = (dydv * dx - dxdv * dy) / det;
+        const dv = (-dydu * dx + dxdu * dy) / det;
+
+        u += du;
+        v += dv;
+
+        if (Math.abs(du) < 0.001 && Math.abs(dv) < 0.001) break;
+    }
+
+    const inside = u >= 0 && u <= 1 && v >= 0 && v <= 1;
+    return { inside, u, v };
+}
+
+// Cache for calibration data
+let cachedCalibration = null;
+
+async function handleDebugImageClick(event) {
+    if (!gtMode) return;
+
+    // Get click position relative to image
+    const rect = debugImg.getBoundingClientRect();
+    const clickX = event.clientX - rect.left;
+    const clickY = event.clientY - rect.top;
+
+    // Convert to image coordinates
+    const imgX = clickX * debugImg.naturalWidth / rect.width;
+    const imgY = clickY * debugImg.naturalHeight / rect.height;
+
+    // Fetch calibration data (cached)
+    try {
+        if (!cachedCalibration) {
+            const response = await fetch('/output/calibration.json');
+            if (!response.ok) {
+                showToast('No calibration data. Please calibrate first.', 'warning');
+                return;
+            }
+            cachedCalibration = await response.json();
+        }
+
+        const facePolygons = cachedCalibration.face_polygons;
+        if (!facePolygons) {
+            showToast('Invalid calibration data', 'error');
+            return;
+        }
+
+        // Check each face
+        for (const [face, polygon] of Object.entries(facePolygons)) {
+            const corners = orderPolygonCorners(polygon);
+            const result = pointInQuad(imgX, imgY, corners);
+
+            if (result.inside) {
+                const row = Math.min(2, Math.floor(result.v * 3));
+                const col = Math.min(2, Math.floor(result.u * 3));
+                selectGtSticker(face, row, col);
+                console.log(`Selected: ${face}[${row},${col}] at UV(${result.u.toFixed(2)}, ${result.v.toFixed(2)})`);
+                return;
+            }
+        }
+
+        // Click was outside all faces
+        console.log(`Click at (${imgX.toFixed(0)}, ${imgY.toFixed(0)}) - outside face polygons`);
+
+    } catch (error) {
+        console.error('Failed to process click:', error);
+        showToast('Error processing click', 'error');
+    }
+}
+
+async function fetchGroundTruth() {
+    try {
+        const response = await fetch('/ground-truth');
+        if (response.ok) {
+            const data = await response.json();
+            if (data.colors) {
+                groundTruth = data.colors;
+                groundTruthData = data.colors;  // Store for 3D cube
+                updateGtCount();
+                // Update 3D ground truth cube
+                updateGroundTruthCube(groundTruthData);
+            }
+        }
+    } catch (error) {
+        console.warn('No existing ground truth found');
+    }
+}
+
+async function saveGroundTruth() {
+    try {
+        const response = await fetch('/ground-truth', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ colors: groundTruth })
+        });
+
+        if (response.ok) {
+            showToast('Ground truth saved!', 'success');
+            // Update 3D ground truth cube
+            groundTruthData = { ...groundTruth };
+            updateGroundTruthCube(groundTruthData);
+            // Update accuracy summary with current state
+            const state = await fetchCubeState();
+            if (state) {
+                updateAccuracySummary(state, groundTruthData);
+            }
+        } else {
+            showToast('Failed to save ground truth', 'error');
+        }
+    } catch (error) {
+        showToast('Error: ' + error.message, 'error');
+    }
+}
+
+function clearGroundTruth() {
+    groundTruth = {
+        U: [[null, null, null], [null, null, null], [null, null, null]],
+        F: [[null, null, null], [null, null, null], [null, null, null]],
+        R: [[null, null, null], [null, null, null], [null, null, null]],
+    };
+    groundTruthData = { ...groundTruth };
+    gtSelectedSticker.textContent = 'None';
+    updateGtCount();
+    // Update 3D cube (shows as unmarked/dark)
+    updateGroundTruthCube(groundTruthData);
+    // Clear accuracy summary
+    const summaryEl = document.getElementById('accuracy-summary');
+    if (summaryEl) {
+        summaryEl.textContent = 'No ground truth marked';
+        summaryEl.style.color = '#aaa';
+    }
+}
+
+/**
+ * Update accuracy summary text (e.g., "23/27 correct (85%)")
+ */
+function updateAccuracySummary(detected, groundTruthColors) {
+    const summaryEl = document.getElementById('accuracy-summary');
+    if (!summaryEl) return;
+
+    if (!groundTruthColors) {
+        summaryEl.textContent = 'No ground truth data';
+        return;
+    }
+
+    let correct = 0, total = 0;
+    for (const face of ['U', 'F', 'R']) {
+        const gt = groundTruthColors[face];
+        const det = detected?.faces?.[face];
+        if (!gt) continue;
+
+        for (let r = 0; r < 3; r++) {
+            for (let c = 0; c < 3; c++) {
+                if (gt[r]?.[c]) {
+                    total++;
+                    if (det?.[r]?.[c] === gt[r][c]) correct++;
+                }
+            }
+        }
+    }
+
+    if (total === 0) {
+        summaryEl.textContent = 'No ground truth marked';
+        return;
+    }
+
+    const pct = Math.round(100 * correct / total);
+    summaryEl.textContent = `${correct}/${total} correct (${pct}%)`;
+
+    // Color code the result
+    if (pct >= 90) {
+        summaryEl.style.color = '#4caf50';  // Green
+    } else if (pct >= 70) {
+        summaryEl.style.color = '#ff9800';  // Orange
+    } else {
+        summaryEl.style.color = '#f44336';  // Red
+    }
+}
+
+// Ground truth event listeners - attach directly without guards
+// Elements are guaranteed to exist in the HTML
+gtBtn.addEventListener('click', () => {
+    console.log('Ground Truth button clicked');
+    toggleGtMode();
+});
+
+gtClose.addEventListener('click', () => {
+    console.log('GT Close clicked');
+    gtOverlay.classList.add('hidden');
+    document.body.classList.remove('gt-mode');
+    gtMode = false;
+});
+
+gtClear.addEventListener('click', () => {
+    console.log('GT Clear clicked');
+    clearGroundTruth();
+});
+
+gtSave.addEventListener('click', () => {
+    console.log('GT Save clicked');
+    saveGroundTruth();
+});
+
+gtColorBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+        console.log('Color button clicked:', btn.dataset.color);
+        setGtColor(btn.dataset.color);
+    });
+});
+
+debugImg.addEventListener('click', handleDebugImageClick);
+
+// ============================================
+// 3D Calibration Mode
+// ============================================
+
+const cal3dBtn = document.getElementById('calibrate-3d-btn');
+const cal3dOverlay = document.getElementById('calibrate-3d-overlay');
+const cal3dTabs = document.querySelectorAll('.cal3d-tab');
+const cal3dTarget = document.getElementById('cal3d-target');
+const cal3dRotValue = document.getElementById('cal3d-rot-value');
+const cal3dRotLeft = document.getElementById('cal3d-rot-left');
+const cal3dRotRight = document.getElementById('cal3d-rot-right');
+const cal3dReset = document.getElementById('cal3d-reset');
+const cal3dSave = document.getElementById('cal3d-save');
+const cal3dClose = document.getElementById('cal3d-close');
+
+let cal3dMode = false;
+let currentCalFace = 'U';  // Currently selected camera ROI (U, F, or R)
+let faceMappings = {
+    U: { target: 'U', rotation: 0 },
+    F: { target: 'F', rotation: 0 },
+    R: { target: 'R', rotation: 0 }
+};
+
+function openCal3DPanel() {
+    cal3dMode = true;
+    cal3dOverlay.classList.remove('hidden');
+    loadMappings();
+}
+
+function closeCal3DPanel() {
+    cal3dMode = false;
+    cal3dOverlay.classList.add('hidden');
+    disableFaceClickMode();
+    highlightFace(null);
+    showFaceLabels(null);
+}
+
+async function loadMappings() {
+    // Load from cached calibration or fetch
+    try {
+        if (!cachedCalibration) {
+            const response = await fetch('/output/calibration.json');
+            if (response.ok) {
+                cachedCalibration = await response.json();
+            }
+        }
+
+        if (cachedCalibration?.face_mappings) {
+            // Load from new face_mappings format
+            faceMappings = {
+                U: { ...cachedCalibration.face_mappings.U },
+                F: { ...cachedCalibration.face_mappings.F },
+                R: { ...cachedCalibration.face_mappings.R }
+            };
+        } else if (cachedCalibration?.face_orientations) {
+            // Backwards compatibility: convert from old format
+            faceMappings = {
+                U: { target: 'U', rotation: cachedCalibration.face_orientations.U || 0 },
+                F: { target: 'F', rotation: cachedCalibration.face_orientations.F || 0 },
+                R: { target: 'R', rotation: cachedCalibration.face_orientations.R || 0 }
+            };
+        } else {
+            faceMappings = {
+                U: { target: 'U', rotation: 0 },
+                F: { target: 'F', rotation: 0 },
+                R: { target: 'R', rotation: 0 }
+            };
+        }
+    } catch (e) {
+        console.warn('Failed to load mappings:', e);
+        faceMappings = {
+            U: { target: 'U', rotation: 0 },
+            F: { target: 'F', rotation: 0 },
+            R: { target: 'R', rotation: 0 }
+        };
+    }
+
+    updateCal3DUI();
+    selectCalFace(currentCalFace);
+
+    // Enable face click mode
+    enableFaceClickMode((clickedFace) => {
+        faceMappings[currentCalFace].target = clickedFace;
+        updateCal3DUI();
+        applyMappingsToOrientations();
+        // Update highlight to new target face
+        highlightFace(clickedFace);
+        showFaceLabels(clickedFace);
+    });
+}
+
+function selectCalFace(face) {
+    currentCalFace = face;
+    updateCal3DUI();
+
+    const targetFace = faceMappings[face].target;
+    highlightFace(targetFace);
+    showFaceLabels(targetFace);
+}
+
+function rotateLeft() {
+    faceMappings[currentCalFace].rotation =
+        (faceMappings[currentCalFace].rotation + 270) % 360;
+    updateCal3DUI();
+    applyMappingsToOrientations();
+}
+
+function rotateRight() {
+    faceMappings[currentCalFace].rotation =
+        (faceMappings[currentCalFace].rotation + 90) % 360;
+    updateCal3DUI();
+    applyMappingsToOrientations();
+}
+
+function applyMappingsToOrientations() {
+    // Convert mappings to orientations format for cube3d
+    const orientations = {};
+    for (const [roi, mapping] of Object.entries(faceMappings)) {
+        orientations[mapping.target] = mapping.rotation;
+    }
+    setOrientations(orientations);
+}
+
+function updateCal3DUI() {
+    // Update tab selection
+    cal3dTabs.forEach(tab => {
+        tab.classList.toggle('selected', tab.dataset.face === currentCalFace);
+    });
+
+    // Update mapping display
+    const mapping = faceMappings[currentCalFace];
+    if (cal3dTarget) cal3dTarget.textContent = mapping.target;
+    if (cal3dRotValue) cal3dRotValue.textContent = `${mapping.rotation}°`;
+}
+
+async function saveMappings() {
+    // Preserve existing calibration and add mappings
+    try {
+        if (!cachedCalibration) {
+            const response = await fetch('/output/calibration.json');
+            if (response.ok) {
+                cachedCalibration = await response.json();
+            } else {
+                showToast('No calibration data. Please calibrate ROI first.', 'warning');
+                return;
+            }
+        }
+
+        // Convert to face_orientations for backwards compatibility
+        const faceOrientations = {};
+        for (const [roi, mapping] of Object.entries(faceMappings)) {
+            faceOrientations[mapping.target] = mapping.rotation;
+        }
+
+        const data = {
+            vertices: cachedCalibration.vertices || {},
+            face_polygons: cachedCalibration.face_polygons || {},
+            face_mappings: faceMappings,
+            face_orientations: faceOrientations  // Keep for backwards compat
+        };
+
+        const response = await fetch('/calibrate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+
+        if (response.ok) {
+            cachedCalibration.face_mappings = faceMappings;
+            cachedCalibration.face_orientations = faceOrientations;
+            showToast('3D calibration saved!', 'success');
+        } else {
+            showToast('Failed to save calibration', 'error');
+        }
+    } catch (e) {
+        showToast('Error: ' + e.message, 'error');
+    }
+}
+
+function resetMappings() {
+    faceMappings = {
+        U: { target: 'U', rotation: 0 },
+        F: { target: 'F', rotation: 0 },
+        R: { target: 'R', rotation: 0 }
+    };
+    updateCal3DUI();
+    applyMappingsToOrientations();
+    selectCalFace(currentCalFace);
+}
+
+// 3D Calibration event listeners
+if (cal3dBtn) {
+    cal3dBtn.addEventListener('click', () => {
+        if (cal3dMode) {
+            closeCal3DPanel();
+        } else {
+            openCal3DPanel();
+        }
+    });
+}
+
+if (cal3dClose) {
+    cal3dClose.addEventListener('click', closeCal3DPanel);
+}
+
+cal3dTabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+        selectCalFace(tab.dataset.face);
+    });
+});
+
+if (cal3dRotLeft) {
+    cal3dRotLeft.addEventListener('click', rotateLeft);
+}
+
+if (cal3dRotRight) {
+    cal3dRotRight.addEventListener('click', rotateRight);
+}
+
+if (cal3dReset) {
+    cal3dReset.addEventListener('click', resetMappings);
+}
+
+if (cal3dSave) {
+    cal3dSave.addEventListener('click', saveMappings);
+}
+
+// Load mappings on page startup (after cube init)
+setTimeout(async () => {
+    try {
+        const response = await fetch('/output/calibration.json');
+        if (response.ok) {
+            cachedCalibration = await response.json();
+            if (cachedCalibration?.face_mappings) {
+                faceMappings = {
+                    U: { ...cachedCalibration.face_mappings.U },
+                    F: { ...cachedCalibration.face_mappings.F },
+                    R: { ...cachedCalibration.face_mappings.R }
+                };
+            } else if (cachedCalibration?.face_orientations) {
+                // Backwards compat
+                faceMappings = {
+                    U: { target: 'U', rotation: cachedCalibration.face_orientations.U || 0 },
+                    F: { target: 'F', rotation: cachedCalibration.face_orientations.F || 0 },
+                    R: { target: 'R', rotation: cachedCalibration.face_orientations.R || 0 }
+                };
+            }
+            applyMappingsToOrientations();
+        }
+    } catch (e) {
+        console.warn('Failed to load initial mappings:', e);
+    }
+}, 200);  // After cube init (100ms)

@@ -14,7 +14,7 @@ Set up project structure, calibration config, and CLAUDE.md conventions.
 
 ```python
 # Camera configuration
-CAMERA_URL = "http://192.168.1.237:8081/video"
+CAMERA_URL = "http://192.168.1.102:8081/video"
 CAMERA_DISTANCE_MM = 150
 CAMERA_PITCH_DEG = 53.5   # Downward tilt
 CAMERA_ROLL_DEG = -21.5   # Rightward tilt

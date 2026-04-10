@@ -78,7 +78,7 @@ See `todos/T5-HANDOFF.md` for full spec.
 ## Camera Setup
 
 - iPhone in 3D printed mount at 150mm from cube
-- URL: `http://192.168.1.237:8081/video`
+- URL: `http://192.168.1.102:8081/video`
 - Pitch: 53.5° down, Roll: -21.5° right
 - Sees 3 adjacent faces: U (white/top), F (red/front-left), R (blue/front-right)
 

@@ -561,6 +561,99 @@ footer {
     margin-top: 1rem;
 }
 
+/* Ground Truth overlay - positioned at bottom-left like calibration */
+#ground-truth-overlay {
+    position: fixed;
+    bottom: 220px;
+    left: 1rem;
+    width: 280px;
+    z-index: 1000;
+}
+
+#ground-truth-overlay.hidden {
+    display: none;
+}
+
+.ground-truth-content {
+    background-color: #2d2d2d;
+    border-radius: 8px;
+    padding: 1rem;
+    border: 1px solid #3d3d3d;
+}
+
+.ground-truth-content h2 {
+    margin-bottom: 0.25rem;
+    font-size: 1.1rem;
+}
+
+.gt-help {
+    color: #909090;
+    font-size: 0.8rem;
+    margin-bottom: 1rem;
+}
+
+.gt-selected {
+    background-color: #1a1a1a;
+    padding: 0.5rem;
+    border-radius: 4px;
+    margin-bottom: 1rem;
+    font-size: 0.9rem;
+}
+
+#gt-selected-sticker {
+    color: #4caf50;
+    font-weight: 500;
+}
+
+.gt-colors {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 1rem;
+}
+
+.gt-color-btn {
+    width: 40px;
+    height: 40px;
+    border: 2px solid #404040;
+    border-radius: 4px;
+    font-weight: bold;
+    font-size: 1rem;
+    cursor: pointer;
+    transition: transform 0.1s, border-color 0.2s;
+}
+
+.gt-color-btn:hover {
+    transform: scale(1.1);
+    border-color: #808080;
+}
+
+.gt-color-btn.selected {
+    border-color: #4caf50;
+    box-shadow: 0 0 8px rgba(76, 175, 80, 0.5);
+}
+
+.gt-status {
+    color: #909090;
+    font-size: 0.85rem;
+    margin-bottom: 1rem;
+}
+
+.gt-actions {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: flex-end;
+}
+
+/* Ground truth mode cursor */
+.gt-mode #debug-container {
+    cursor: crosshair;
+}
+
+.gt-mode #debug-img {
+    cursor: crosshair;
+}
+
 /* Stream badge */
 .stream-badge {
     background-color: #f44336;
@@ -584,4 +677,238 @@ footer {
 
 #stream-btn.streaming:hover {
     background-color: #d32f2f;
+}
+
+/* ============================================
+   3D Calibration Overlay
+   ============================================ */
+
+#calibrate-3d-overlay {
+    position: fixed;
+    bottom: 220px;
+    left: 1rem;
+    width: 280px;
+    z-index: 1000;
+}
+
+#calibrate-3d-overlay.hidden {
+    display: none;
+}
+
+.cal3d-content {
+    background-color: #2d2d2d;
+    border-radius: 8px;
+    padding: 1rem;
+    border: 1px solid #3d3d3d;
+}
+
+.cal3d-content h2 {
+    margin-bottom: 0.25rem;
+    font-size: 1.1rem;
+}
+
+.cal3d-help {
+    color: #909090;
+    font-size: 0.8rem;
+    margin-bottom: 1rem;
+}
+
+.cal3d-section {
+    margin-bottom: 1rem;
+}
+
+.cal3d-label {
+    display: block;
+    color: #909090;
+    font-size: 0.8rem;
+    margin-bottom: 0.5rem;
+}
+
+.cal3d-face-tabs {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.cal3d-tab {
+    flex: 1;
+    padding: 0.5rem;
+    background: #404040;
+    border: 2px solid transparent;
+    border-radius: 4px;
+    color: #e0e0e0;
+    cursor: pointer;
+    font-weight: bold;
+    font-size: 0.9rem;
+    transition: all 0.2s;
+}
+
+.cal3d-tab:hover {
+    background: #505050;
+}
+
+.cal3d-tab.selected {
+    border-color: #4caf50;
+    background: #1a1a1a;
+}
+
+.cal3d-mapping {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+    padding: 0.75rem;
+    background: #1a1a1a;
+    border-radius: 4px;
+}
+
+.cal3d-target-value {
+    background: #4caf50;
+    color: white;
+    padding: 0.25rem 0.75rem;
+    border-radius: 4px;
+    font-weight: bold;
+    font-size: 1rem;
+}
+
+.cal3d-hint {
+    color: #707070;
+    font-size: 0.75rem;
+    font-style: italic;
+}
+
+.cal3d-rotation {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+    padding: 0.75rem;
+    background: #1a1a1a;
+    border-radius: 4px;
+}
+
+.cal3d-rot-btn {
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    font-size: 1.2rem;
+    font-weight: bold;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.cal3d-rot-btn:hover {
+    background: #505050;
+}
+
+.cal3d-rot-display {
+    flex: 1;
+    text-align: center;
+    font-size: 1.1rem;
+    font-weight: bold;
+    color: #e0e0e0;
+}
+
+.cal3d-actions {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: flex-end;
+}
+
+/* Step Indicator Styles */
+.step-indicator {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 8px 0;
+    margin-bottom: 8px;
+}
+
+.step {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 8px 16px;
+    border-radius: 8px;
+    background: #333;
+    border: 2px solid #444;
+    min-width: 80px;
+    transition: all 0.3s ease;
+}
+
+.step.pending {
+    opacity: 0.5;
+}
+
+.step.active {
+    background: #1565c0;
+    border-color: #1e88e5;
+    box-shadow: 0 0 12px rgba(30, 136, 229, 0.4);
+}
+
+.step.completed {
+    background: #2e7d32;
+    border-color: #43a047;
+}
+
+.step-num {
+    font-size: 1.4em;
+    font-weight: bold;
+    color: #fff;
+}
+
+.step-label {
+    font-size: 0.75em;
+    color: #bbb;
+    margin-top: 2px;
+}
+
+.step-faces {
+    font-size: 0.7em;
+    color: #888;
+    font-family: monospace;
+}
+
+.step-arrow {
+    font-size: 1.5em;
+    color: #666;
+}
+
+/* Dual Cube Comparison Styles */
+.cube-labels {
+    display: flex;
+    justify-content: space-around;
+    margin-bottom: 4px;
+}
+
+.cube-label {
+    font-size: 0.9em;
+    color: #888;
+    text-align: center;
+}
+
+.accuracy-summary {
+    text-align: center;
+    padding: 8px;
+    font-size: 0.9em;
+    color: #aaa;
+    margin-top: 8px;
+}
+
+.accuracy-summary.good {
+    color: #4caf50;
+}
+
+.accuracy-summary.warning {
+    color: #ff9800;
+}
+
+.accuracy-summary.poor {
+    color: #f44336;
+}
+
+.sticker-indicator {
+    text-shadow: 0 0 3px black, 0 0 3px black;
+    font-weight: bold;
 }

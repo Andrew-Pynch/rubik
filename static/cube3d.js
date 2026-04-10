@@ -1,33 +1,37 @@
 /**
- * Three.js 3D Rubik's Cube Visualization
+ * Three.js 3D Rubik's Cube Visualization - Dual Cube Mode
  *
- * Realistic cube with black plastic cubies and raised colored stickers.
- * Integrates with the CV pipeline via state.json updates.
+ * Shows two cubes side by side:
+ * - Left: Estimation cube (CV detection results) with accuracy indicators
+ * - Right: Ground Truth cube (manually marked expected colors)
+ *
+ * Both cubes rotate together via shared OrbitControls.
  */
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 
 // ============================================
 // Constants
 // ============================================
 
-const CUBIE_SIZE = 0.95;      // Size of each cubie (gap = 1 - 0.95 = 0.05)
-const STICKER_SIZE = 0.85;    // Sticker slightly smaller than cubie face
-const STICKER_DEPTH = 0.02;   // How much sticker is raised
+const CUBIE_SIZE = 0.95;
+const STICKER_SIZE = 0.85;
+const STICKER_DEPTH = 0.02;
+const CUBE_OFFSET = 2.8;  // Distance from center for each cube
 
-// Color mapping from state.json letters to hex colors
 const COLOR_MAP = {
-    'W': 0xffffff,  // White
-    'Y': 0xffdd00,  // Yellow
-    'O': 0xff8800,  // Orange
-    'R': 0xee0000,  // Red
-    'G': 0x00bb00,  // Green
-    'B': 0x0066ff,  // Blue
-    '?': 0x404040,  // Unknown (dark gray)
+    'W': 0xffffff,
+    'Y': 0xffdd00,
+    'O': 0xff8800,
+    'R': 0xee0000,
+    'G': 0x00bb00,
+    'B': 0x0066ff,
+    '?': 0x404040,
+    null: 0x303030,  // Unmarked (darker gray)
 };
 
-// Face configuration: which direction each face points
 const FACE_CONFIG = {
     'U': { axis: 'y', value: 1,  rotation: [-Math.PI/2, 0, 0] },
     'D': { axis: 'y', value: -1, rotation: [Math.PI/2, 0, 0] },
@@ -37,36 +41,39 @@ const FACE_CONFIG = {
     'B': { axis: 'z', value: -1, rotation: [0, Math.PI, 0] },
 };
 
+const FACE_GRID_TRANSFORMS = {
+    'U': { rowFlip: false, colFlip: false },
+    'D': { rowFlip: false, colFlip: false },
+    'F': { rowFlip: false, colFlip: false },
+    'B': { rowFlip: false, colFlip: false },
+    'L': { rowFlip: false, colFlip: false },
+    'R': { rowFlip: false, colFlip: true },
+};
+
 // ============================================
 // Module State
 // ============================================
 
-let scene, camera, renderer, controls;
+let scene, camera, renderer, controls, labelRenderer;
 let container;
-let stickers = {};  // { 'U': [[mesh, mesh, mesh], ...], ... }
 let animationId;
 let resizeObserver;
 
-// ============================================
-// Materials
-// ============================================
+// Dual cube state
+let estimationCube = null;  // { group, stickers, indicators }
+let groundTruthCube = null; // { group, stickers }
 
-// Black plastic for cubie bodies
+// State caching
+let currentOrientations = { U: 0, F: 0, R: 0, D: 0, L: 0, B: 0 };
+let lastStateData = null;
+let lastGroundTruth = null;
+
+// Materials
 const cubieMaterial = new THREE.MeshStandardMaterial({
     color: 0x111111,
     roughness: 0.4,
     metalness: 0.0,
 });
-
-// Create sticker materials (shared across all stickers of same color)
-const stickerMaterials = {};
-for (const [letter, color] of Object.entries(COLOR_MAP)) {
-    stickerMaterials[letter] = new THREE.MeshStandardMaterial({
-        color: color,
-        roughness: 0.3,
-        metalness: 0.0,
-    });
-}
 
 // ============================================
 // Initialization
@@ -80,90 +87,93 @@ export function initCube3D(containerElement) {
 
     container = containerElement;
     console.log('cube3d: Container found, size:', container.clientWidth, 'x', container.clientHeight);
-    container.innerHTML = '';  // Clear placeholder
+    container.innerHTML = '';
 
     try {
-        console.log('cube3d: Creating scene...');
         createScene();
-        console.log('cube3d: Creating lighting...');
         createLighting();
-        console.log('cube3d: Creating cube...');
-        createCube();
-        console.log('cube3d: Setting up controls...');
+
+        // Create dual cubes
+        estimationCube = createCubeGroup(-CUBE_OFFSET, true);   // Left, with indicators
+        groundTruthCube = createCubeGroup(CUBE_OFFSET, false);  // Right, no indicators
+
         setupControls();
-        console.log('cube3d: Setting up resize observer...');
         setupResizeObserver();
-        console.log('cube3d: Starting animation loop...');
         animate();
-        console.log('cube3d: Initialization complete!');
+
+        console.log('cube3d: Dual cube initialization complete!');
         return true;
     } catch (error) {
         console.error('cube3d: Failed to initialize:', error);
-        console.error('cube3d: Stack trace:', error.stack);
-        container.innerHTML = '<p style="color: #f44336; padding: 20px;">3D visualization failed to load: ' + error.message + '</p>';
+        container.innerHTML = '<p style="color: #f44336; padding: 20px;">3D visualization failed: ' + error.message + '</p>';
         return false;
     }
 }
 
 function createScene() {
-    // Ensure container has dimensions (use parent or fallback)
     let width = container.clientWidth;
     let height = container.clientHeight;
-
-    // If container has no size yet, use reasonable defaults
-    if (width < 10) width = 300;
+    if (width < 10) width = 400;
     if (height < 10) height = 300;
 
-    // Scene
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x1a1a1a);
 
-    // Camera positioned to see U, F, R faces (matching physical camera view)
-    // Physical camera sees: U (top/white), F (front/red), R (right/blue)
-    // Position camera in front-right-above to see corner where these three faces meet
+    // Camera positioned for corner-on view of both cubes
     camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 100);
-    camera.position.set(4, 4, 4);  // Front-right-above corner view
+    camera.position.set(0, 6, 10);  // Higher and further back to see both cubes
     camera.lookAt(0, 0, 0);
 
-    // Renderer
     renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     container.appendChild(renderer.domElement);
+
+    labelRenderer = new CSS2DRenderer();
+    labelRenderer.setSize(width, height);
+    labelRenderer.domElement.style.position = 'absolute';
+    labelRenderer.domElement.style.top = '0';
+    labelRenderer.domElement.style.left = '0';
+    labelRenderer.domElement.style.pointerEvents = 'none';
+    container.style.position = 'relative';
+    container.appendChild(labelRenderer.domElement);
 }
 
 function createLighting() {
-    // Ambient light for base visibility
     const ambient = new THREE.AmbientLight(0xffffff, 0.5);
     scene.add(ambient);
 
-    // Key light (main, from upper-front-left)
     const keyLight = new THREE.DirectionalLight(0xffffff, 0.8);
     keyLight.position.set(-3, 5, 4);
     scene.add(keyLight);
 
-    // Fill light (softer, from right)
     const fillLight = new THREE.DirectionalLight(0xffffff, 0.3);
     fillLight.position.set(4, 2, -2);
     scene.add(fillLight);
 
-    // Rim light (back lighting for depth)
     const rimLight = new THREE.DirectionalLight(0xffffff, 0.2);
     rimLight.position.set(0, -2, -4);
     scene.add(rimLight);
 }
 
-function createCube() {
-    // Create 27 cubies in a 3x3x3 grid
+function createCubeGroup(xOffset, withIndicators) {
+    const group = new THREE.Group();
+    group.position.x = xOffset;
+
+    // Create cubies within group
     for (let x = -1; x <= 1; x++) {
         for (let y = -1; y <= 1; y++) {
             for (let z = -1; z <= 1; z++) {
-                createCubie(x, y, z);
+                const geometry = new THREE.BoxGeometry(CUBIE_SIZE, CUBIE_SIZE, CUBIE_SIZE);
+                const mesh = new THREE.Mesh(geometry, cubieMaterial);
+                mesh.position.set(x, y, z);
+                group.add(mesh);
             }
         }
     }
 
-    // Initialize sticker tracking
+    // Create stickers for each face
+    const stickers = {};
     for (const faceName of Object.keys(FACE_CONFIG)) {
         stickers[faceName] = [];
         for (let row = 0; row < 3; row++) {
@@ -171,102 +181,85 @@ function createCube() {
         }
     }
 
-    // Create stickers on outer faces
-    createFaceStickers('U');
-    createFaceStickers('D');
-    createFaceStickers('L');
-    createFaceStickers('R');
-    createFaceStickers('F');
-    createFaceStickers('B');
+    for (const faceName of Object.keys(FACE_CONFIG)) {
+        createFaceStickersForGroup(group, stickers, faceName);
+    }
+
+    scene.add(group);
+
+    // Create indicators for estimation cube only
+    let indicators = null;
+    if (withIndicators) {
+        indicators = createIndicators(group, stickers);
+    }
+
+    return { group, stickers, indicators };
 }
 
-function createCubie(x, y, z) {
-    const geometry = new THREE.BoxGeometry(CUBIE_SIZE, CUBIE_SIZE, CUBIE_SIZE);
-    const mesh = new THREE.Mesh(geometry, cubieMaterial);
-    mesh.position.set(x, y, z);
-    scene.add(mesh);
-}
-
-function createFaceStickers(faceName) {
+function createFaceStickersForGroup(group, stickers, faceName) {
     const config = FACE_CONFIG[faceName];
     const geometry = new THREE.PlaneGeometry(STICKER_SIZE, STICKER_SIZE);
 
     for (let row = 0; row < 3; row++) {
         for (let col = 0; col < 3; col++) {
-            // Calculate cubie position for this sticker
             const cubiePos = getCubiePosition(faceName, row, col);
 
-            // Create sticker mesh
-            const mesh = new THREE.Mesh(geometry, stickerMaterials['?'].clone());
+            // Create sticker with cloned material for individual coloring
+            const material = new THREE.MeshStandardMaterial({
+                color: COLOR_MAP['?'],
+                roughness: 0.3,
+                metalness: 0.0,
+            });
+            const mesh = new THREE.Mesh(geometry, material);
 
-            // Position sticker on the outer face of the cubie
             const offset = (CUBIE_SIZE / 2) + STICKER_DEPTH;
 
             if (config.axis === 'y') {
-                mesh.position.set(
-                    cubiePos.x,
-                    cubiePos.y + (config.value * offset),
-                    cubiePos.z
-                );
+                mesh.position.set(cubiePos.x, cubiePos.y + (config.value * offset), cubiePos.z);
             } else if (config.axis === 'x') {
-                mesh.position.set(
-                    cubiePos.x + (config.value * offset),
-                    cubiePos.y,
-                    cubiePos.z
-                );
-            } else {  // z
-                mesh.position.set(
-                    cubiePos.x,
-                    cubiePos.y,
-                    cubiePos.z + (config.value * offset)
-                );
+                mesh.position.set(cubiePos.x + (config.value * offset), cubiePos.y, cubiePos.z);
+            } else {
+                mesh.position.set(cubiePos.x, cubiePos.y, cubiePos.z + (config.value * offset));
             }
 
-            // Rotate sticker to face outward
             mesh.rotation.set(...config.rotation);
-
-            scene.add(mesh);
+            group.add(mesh);
             stickers[faceName][row][col] = mesh;
         }
     }
 }
 
 function getCubiePosition(faceName, row, col) {
-    // Convert (row, col) grid position to (x, y, z) cubie coordinates
-    // row 0 = top/back, row 2 = bottom/front
-    // col 0 = left, col 2 = right
-
-    const config = FACE_CONFIG[faceName];
     let x, y, z;
 
     switch (faceName) {
-        case 'U':  // Looking down at top face
+        case 'U':
             x = col - 1;
             y = 1;
-            z = row - 1;  // row 0 = back (z=-1), row 2 = front (z=1)
+            z = row - 1;
             break;
-        case 'D':  // Looking up at bottom face
+        case 'D':
             x = col - 1;
             y = -1;
-            z = row - 1;  // row 0 = front, row 2 = back
+            z = row - 1;
             break;
-        case 'L':  // Looking at left face from left side
+        case 'L':
             x = -1;
             y = 1 - row;
-            z = 1 - col;  // col 0 = back, col 2 = front
+            z = 1 - col;
             break;
-        case 'R':  // Looking at right face from right side
+        case 'R':
             x = 1;
             y = 1 - row;
-            z = 1 - col;  // col 0 = front (z=1), col 2 = back (z=-1)
+            z = 1 - col;
             break;
-        case 'F':  // Looking at front face
+        case 'F':
             x = col - 1;
             y = 1 - row;
             z = 1;
             break;
-        case 'B':  // Looking at back face (from behind)
-            x = 1 - col;  // mirrored
+        case 'B':
+            x = 1 - col;
             y = 1 - row;
             z = -1;
             break;
@@ -277,13 +270,46 @@ function getCubiePosition(faceName, row, col) {
     return { x, y, z };
 }
 
+function createIndicators(group, stickers) {
+    const indicators = {};
+
+    for (const faceName of ['U', 'F', 'R']) {  // Only visible faces
+        indicators[faceName] = [];
+        for (let row = 0; row < 3; row++) {
+            indicators[faceName].push([]);
+            for (let col = 0; col < 3; col++) {
+                const div = document.createElement('div');
+                div.className = 'sticker-indicator';
+                div.style.cssText = 'font-size: 16px; font-weight: bold; pointer-events: none; text-shadow: 0 0 3px black, 0 0 3px black;';
+
+                const indicator = new CSS2DObject(div);
+
+                // Position at sticker location
+                const stickerMesh = stickers[faceName][row][col];
+                if (stickerMesh) {
+                    indicator.position.copy(stickerMesh.position);
+                }
+
+                indicator.visible = false;
+                group.add(indicator);
+                indicators[faceName][row].push(indicator);
+            }
+        }
+    }
+
+    return indicators;
+}
+
 function setupControls() {
     controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.05;
-    controls.minDistance = 4;
-    controls.maxDistance = 12;
+    controls.minDistance = 8;
+    controls.maxDistance = 20;
     controls.enablePan = false;
+    // Constrain vertical rotation
+    controls.minPolarAngle = Math.PI / 6;
+    controls.maxPolarAngle = Math.PI / 2;
 }
 
 function setupResizeObserver() {
@@ -303,6 +329,9 @@ function resize(width, height) {
     camera.aspect = width / height;
     camera.updateProjectionMatrix();
     renderer.setSize(width, height);
+    if (labelRenderer) {
+        labelRenderer.setSize(width, height);
+    }
 }
 
 function animate() {
@@ -310,76 +339,230 @@ function animate() {
     if (controls) controls.update();
     if (renderer && scene && camera) {
         renderer.render(scene, camera);
+        if (labelRenderer) {
+            labelRenderer.render(scene, camera);
+        }
     }
 }
 
 // ============================================
-// State Update
+// Coordinate Transforms
+// ============================================
+
+function applyFaceGridTransform(row, col, faceName) {
+    const transform = FACE_GRID_TRANSFORMS[faceName];
+    if (!transform) return [row, col];
+
+    let r = row, c = col;
+    if (transform.rowFlip) r = 2 - r;
+    if (transform.colFlip) c = 2 - c;
+
+    return [r, c];
+}
+
+function transformGridPosition(row, col, rotation) {
+    switch (rotation) {
+        case 0:   return [row, col];
+        case 90:  return [2 - col, row];
+        case 180: return [2 - row, 2 - col];
+        case 270: return [col, 2 - row];
+        default:  return [row, col];
+    }
+}
+
+// ============================================
+// State Updates
 // ============================================
 
 /**
- * Update cube visualization with new state data.
- *
- * @param {Object} stateData - State object with faces and optionally face_confidences
- * @param {Object} stateData.faces - Dict mapping face name to 3x3 color grid
- * @param {Object} stateData.face_confidences - Optional dict mapping face name to 3x3 confidence grid
+ * Update estimation cube with detection state and compare to ground truth.
  */
-export function updateCubeState(stateData) {
+export function updateCubeState(stateData, orientations = null) {
     if (!stateData || !stateData.faces) {
         console.warn('cube3d: Invalid state data');
         return;
     }
 
-    // Get confidence data if available
+    if (orientations) {
+        currentOrientations = { ...currentOrientations, ...orientations };
+    }
+
+    lastStateData = stateData;
+
+    if (estimationCube) {
+        applyStateToStickers(estimationCube.stickers, stateData);
+
+        // Update indicators if we have ground truth
+        if (lastGroundTruth && estimationCube.indicators) {
+            updateIndicators(stateData, lastGroundTruth);
+        }
+    }
+}
+
+/**
+ * Update ground truth cube with expected colors.
+ */
+export function updateGroundTruthCube(groundTruth) {
+    if (!groundTruth) return;
+
+    lastGroundTruth = groundTruth;
+
+    if (groundTruthCube) {
+        applyGroundTruthToStickers(groundTruthCube.stickers, groundTruth);
+    }
+
+    // Update indicators on estimation cube
+    if (lastStateData && estimationCube && estimationCube.indicators) {
+        updateIndicators(lastStateData, groundTruth);
+    }
+}
+
+function applyStateToStickers(stickers, stateData) {
     const faceConfidences = stateData.face_confidences || {};
+    const autoMatch = stateData.auto_match;
+    const useAutoMatch = autoMatch && autoMatch.valid;
 
-    for (const [faceName, grid] of Object.entries(stateData.faces)) {
-        if (!stickers[faceName]) continue;
+    for (const [roiFace, grid] of Object.entries(stateData.faces)) {
+        if (!grid) continue;
 
-        // Get confidence grid for this face (or null)
-        const confGrid = faceConfidences[faceName] || null;
+        const actualFace = useAutoMatch && autoMatch.roi_to_face
+            ? (autoMatch.roi_to_face[roiFace] || roiFace)
+            : roiFace;
+
+        if (!stickers[actualFace]) continue;
+
+        const confGrid = faceConfidences[roiFace] || null;
+        const rotation = useAutoMatch && autoMatch.face_rotations
+            ? (autoMatch.face_rotations[actualFace] || 0)
+            : (currentOrientations[actualFace] || 0);
 
         for (let row = 0; row < 3; row++) {
             for (let col = 0; col < 3; col++) {
-                const mesh = stickers[faceName][row][col];
+                const mesh = stickers[actualFace][row][col];
                 if (!mesh) continue;
 
-                // Get color letter (or '?' if null/undefined)
+                const [rotRow, rotCol] = transformGridPosition(row, col, rotation);
+                const [srcRow, srcCol] = applyFaceGridTransform(rotRow, rotCol, actualFace);
+
                 let colorLetter = '?';
-                if (grid && Array.isArray(grid[row]) && grid[row][col]) {
-                    colorLetter = grid[row][col];
+                if (grid && Array.isArray(grid[srcRow]) && grid[srcRow][srcCol]) {
+                    colorLetter = grid[srcRow][srcCol];
                 }
 
-                // Get confidence (default 1.0 if not available)
-                let confidence = 1.0;
-                if (confGrid && Array.isArray(confGrid[row]) && confGrid[row][col] !== undefined) {
-                    confidence = confGrid[row][col];
-                }
-
-                // Update material color
                 const color = COLOR_MAP[colorLetter] ?? COLOR_MAP['?'];
                 mesh.material.color.setHex(color);
 
-                // Apply confidence-based visual effects
+                // Confidence visualization
+                let confidence = 1.0;
+                if (confGrid && Array.isArray(confGrid[srcRow]) && confGrid[srcRow][srcCol] !== undefined) {
+                    confidence = confGrid[srcRow][srcCol];
+                }
                 applyConfidenceVisualization(mesh, colorLetter, confidence);
             }
         }
     }
 }
 
-/**
- * Apply confidence-based visual effects to a sticker mesh.
- *
- * - High confidence (>=0.7): Solid, fully opaque
- * - Medium confidence (0.4-0.7): Slightly transparent
- * - Low confidence (<0.4): More transparent, darker tint
- *
- * @param {THREE.Mesh} mesh - The sticker mesh
- * @param {string} colorLetter - The detected color letter
- * @param {number} confidence - Confidence score (0.0-1.0)
- */
+function applyGroundTruthToStickers(stickers, groundTruth) {
+    for (const faceName of ['U', 'F', 'R']) {
+        const grid = groundTruth[faceName];
+        if (!grid || !stickers[faceName]) continue;
+
+        for (let row = 0; row < 3; row++) {
+            for (let col = 0; col < 3; col++) {
+                const mesh = stickers[faceName][row][col];
+                if (!mesh) continue;
+
+                const colorLetter = grid[row]?.[col];
+                const color = COLOR_MAP[colorLetter] ?? COLOR_MAP[null];
+                mesh.material.color.setHex(color);
+                mesh.material.transparent = colorLetter == null;
+                mesh.material.opacity = colorLetter == null ? 0.3 : 1.0;
+            }
+        }
+    }
+
+    // Set other faces to dark (not visible in ground truth)
+    for (const faceName of ['D', 'L', 'B']) {
+        if (!stickers[faceName]) continue;
+        for (let row = 0; row < 3; row++) {
+            for (let col = 0; col < 3; col++) {
+                const mesh = stickers[faceName][row][col];
+                if (mesh) {
+                    mesh.material.color.setHex(0x202020);
+                    mesh.material.transparent = true;
+                    mesh.material.opacity = 0.3;
+                }
+            }
+        }
+    }
+}
+
+function updateIndicators(stateData, groundTruth) {
+    if (!estimationCube || !estimationCube.indicators) return;
+
+    const autoMatch = stateData.auto_match;
+    const useAutoMatch = autoMatch && autoMatch.valid;
+
+    for (const faceName of ['U', 'F', 'R']) {
+        const gtGrid = groundTruth[faceName];
+        if (!gtGrid) continue;
+
+        // Find which ROI maps to this face
+        let roiFace = faceName;
+        if (useAutoMatch && autoMatch.roi_to_face) {
+            for (const [roi, face] of Object.entries(autoMatch.roi_to_face)) {
+                if (face === faceName) {
+                    roiFace = roi;
+                    break;
+                }
+            }
+        }
+
+        const detGrid = stateData.faces?.[roiFace];
+        const rotation = useAutoMatch && autoMatch.face_rotations
+            ? (autoMatch.face_rotations[faceName] || 0)
+            : (currentOrientations[faceName] || 0);
+
+        for (let row = 0; row < 3; row++) {
+            for (let col = 0; col < 3; col++) {
+                const indicator = estimationCube.indicators[faceName]?.[row]?.[col];
+                if (!indicator) continue;
+
+                const gtColor = gtGrid[row]?.[col];
+
+                // Get detected color (with transforms)
+                const [rotRow, rotCol] = transformGridPosition(row, col, rotation);
+                const [srcRow, srcCol] = applyFaceGridTransform(rotRow, rotCol, faceName);
+                const detColor = detGrid?.[srcRow]?.[srcCol];
+
+                const div = indicator.element;
+
+                if (!gtColor || gtColor === null) {
+                    // No ground truth for this sticker
+                    indicator.visible = false;
+                } else if (!detColor || detColor === '?') {
+                    // Ground truth exists but no detection
+                    div.textContent = '?';
+                    div.style.color = '#888888';
+                    indicator.visible = true;
+                } else if (detColor === gtColor) {
+                    // Correct
+                    div.textContent = '✓';
+                    div.style.color = '#00ff00';
+                    indicator.visible = true;
+                } else {
+                    // Incorrect
+                    div.textContent = '✗';
+                    div.style.color = '#ff0000';
+                    indicator.visible = true;
+                }
+            }
+        }
+    }
+}
+
 function applyConfidenceVisualization(mesh, colorLetter, confidence) {
-    // Handle unknown stickers specially
     if (colorLetter === '?') {
         mesh.material.transparent = true;
         mesh.material.opacity = 0.5;
@@ -387,7 +570,6 @@ function applyConfidenceVisualization(mesh, colorLetter, confidence) {
         return;
     }
 
-    // High confidence: fully opaque, no effects
     if (confidence >= 0.7) {
         mesh.material.transparent = false;
         mesh.material.opacity = 1.0;
@@ -395,25 +577,74 @@ function applyConfidenceVisualization(mesh, colorLetter, confidence) {
         return;
     }
 
-    // Medium confidence: slight transparency
     if (confidence >= 0.4) {
         mesh.material.transparent = true;
-        mesh.material.opacity = 0.7 + (confidence - 0.4) * 1.0;  // 0.7-1.0 range
+        mesh.material.opacity = 0.7 + (confidence - 0.4) * 1.0;
         mesh.material.emissive = new THREE.Color(0x000000);
         return;
     }
 
-    // Low confidence: more transparent, subtle dark tint
     mesh.material.transparent = true;
-    mesh.material.opacity = 0.5 + confidence * 0.5;  // 0.5-0.7 range
-    // Add slight emissive to indicate uncertainty (dark reddish glow)
-    const emissiveIntensity = (0.4 - confidence) * 0.15;  // Max 0.06 at conf=0
+    mesh.material.opacity = 0.5 + confidence * 0.5;
+    const emissiveIntensity = (0.4 - confidence) * 0.15;
     mesh.material.emissive = new THREE.Color(emissiveIntensity * 2, 0, 0);
 }
 
 // ============================================
-// Cleanup
+// Legacy API (for compatibility)
 // ============================================
+
+export function setOrientations(orientations) {
+    currentOrientations = { ...currentOrientations, ...orientations };
+    if (lastStateData) {
+        updateCubeState(lastStateData);
+    }
+}
+
+export function getOrientations() {
+    return { ...currentOrientations };
+}
+
+// These functions operate on estimation cube for compatibility
+export function highlightFace(faceName) {
+    if (!estimationCube) return;
+
+    // Clear all highlights first
+    for (const face of Object.keys(estimationCube.stickers)) {
+        for (let r = 0; r < 3; r++) {
+            for (let c = 0; c < 3; c++) {
+                const mesh = estimationCube.stickers[face]?.[r]?.[c];
+                if (mesh) {
+                    mesh.material.emissive.setHex(0x000000);
+                }
+            }
+        }
+    }
+
+    // Apply highlight to selected face
+    if (faceName && estimationCube.stickers[faceName]) {
+        for (let r = 0; r < 3; r++) {
+            for (let c = 0; c < 3; c++) {
+                const mesh = estimationCube.stickers[faceName][r][c];
+                if (mesh) {
+                    mesh.material.emissive.setHex(0x444400);
+                }
+            }
+        }
+    }
+}
+
+export function showFaceLabels(faceName) {
+    throw new Error('showFaceLabels not implemented in dual cube mode');
+}
+
+export function enableFaceClickMode(callback) {
+    throw new Error('enableFaceClickMode not implemented in dual cube mode');
+}
+
+export function disableFaceClickMode() {
+    // No-op: Face click mode not supported in dual cube mode
+}
 
 export function dispose() {
     if (animationId) {
@@ -437,5 +668,6 @@ export function dispose() {
     }
     scene = null;
     camera = null;
-    stickers = {};
+    estimationCube = null;
+    groundTruthCube = null;
 }

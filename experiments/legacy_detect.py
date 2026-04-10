@@ -1,4 +1,12 @@
-"""Color detection and sticker finding for Rubik's cube."""
+"""LEGACY: Original single-point color detection.
+
+This module has been superseded by detection.py which uses:
+- Multi-point grid sampling (25 points vs 1)
+- MAD-based outlier rejection
+- Confidence scoring per sticker
+
+Kept for reference and potential A/B testing.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
